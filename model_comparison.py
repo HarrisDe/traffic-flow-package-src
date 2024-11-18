@@ -1,11 +1,15 @@
 import pickle
 import warnings
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_absolute_error, root_mean_squared_error, mean_absolute_percentage_error
 import numpy as np
 from keras.models import load_model
 import matplotlib.patheffects as PathEffects
-from . import TrafficFlowDataProcessing
+from .data_processing import TrafficFlowDataProcessing
+from .helper_functions import normalize_data
+import seaborn as sns
+sns.set_style('darkgrid')
+
 
 class ModelComparisons:
     """
@@ -14,9 +18,9 @@ class ModelComparisons:
     comparison plots of model performance.
     """
 
-    def __init__(self, xgb_filename='best_xgboost_model.pkl', rf_filename='best_random_forest_model.pkl', 
-                 ann_filename='best_neural_network_model.h5', data_file_path='data.csv', 
-                 sample_size=1000, random_state=42):
+    def __init__(self, xgb_filename='../models/best_xgboost_model.pkl', rf_filename='../models/best_random_forest_model.pkl', 
+                 ann_filename='../models/best_neural_network_model.h5', data_file_path='../data/estimated_average_speed_selected_timestamps-edited-new.csv', 
+                 random_state=69):
         """
         Initializes ModelComparisons with model file paths, data file path, and sample size for evaluation.
 
@@ -25,7 +29,6 @@ class ModelComparisons:
         - rf_filename (str): File path to the saved Random Forest model.
         - ann_filename (str): File path to the saved Neural Network model.
         - data_file_path (str): Path to the CSV file for test data preparation.
-        - sample_size (int): Number of random samples to use for error calculation.
         - random_state (int): Seed for reproducibility in random sampling.
         """
         # Model file paths
@@ -35,7 +38,6 @@ class ModelComparisons:
             'Neural Network': ann_filename
         }
         self.data_file_path = data_file_path
-        self.sample_size = sample_size
         self.random_state = random_state
 
         # Dictionaries to store loaded models and error metrics
@@ -48,6 +50,11 @@ class ModelComparisons:
             'Random Forest': '#FFA07A', # Light Salmon
             'Neural Network': '#90EE90' # Light Green
         }
+
+           # Test data (initialized later)
+        self.X_test = None
+        self.y_test = None
+        self.X_test_normalized = None
 
     def load_models(self):
         """Loads each model from the specified file paths. Issues warnings if any files are missing."""
@@ -71,16 +78,15 @@ class ModelComparisons:
         # Here, you would call your data processing pipeline to load and prepare test data
         # This example assumes a method or class exists to handle data loading and returns test splits
         data_processor = TrafficFlowDataProcessing(file_path=self.data_file_path, random_state=self.random_state)
-        _, X_test, _, y_test = data_processor.prepare_data()
+        X_train, X_test, y_train, y_test = data_processor.prepare_data()
 
-        # Select a random sample from the test set if a sample size is specified
-        if self.sample_size < len(X_test):
-            X_test = X_test.sample(n=self.sample_size, random_state=self.random_state)
-            y_test = y_test.loc[X_test.index]  # Match y_test indices to the sampled X_test
 
         # Store prepared test data
+        self.X_train = X_train
         self.X_test = X_test
-        self.y_test = y_test
+        #self.y_test = y_test
+        self.y_test = y_test + self.X_test['value'].values
+        self.X_train_normalized, self.X_test_normalized = normalize_data(X_train,X_test)
 
     def calculate_errors(self):
         """
@@ -99,12 +105,17 @@ class ModelComparisons:
         # Loop over each model and calculate error metrics
         for model_name, model in self.models.items():
             # Generate predictions for the test set
-            y_pred = model.predict(self.X_test).flatten()
-            y_pred += self.X_test['value'].values  # Adjust predictions to actual speeds if needed
+            if 'Neural' in model_name:
+                print('Normalizing X_test because error is being calculated for ANN.')
+                y_pred = model.predict(self.X_test_normalized).flatten()
+            else:
+                y_pred = model.predict(self.X_test).flatten()
+            
+            y_pred += self.X_test['value'].values  # Adjust predictions (speed delta) to actual speeds if needed
 
             # Calculate error metrics and store them
             mae = mean_absolute_error(self.y_test, y_pred)
-            rmse = mean_squared_error(self.y_test, y_pred, squared=False)
+            rmse = root_mean_squared_error(self.y_test, y_pred)
             mape = mean_absolute_percentage_error(self.y_test, y_pred)
 
             # Store calculated errors
@@ -115,11 +126,22 @@ class ModelComparisons:
             }
             print(f"Calculated errors for {model_name}: MAE={mae:.4f}, RMSE={rmse:.4f}, MAPE={mape:.4f}")
 
+    def _use_before_plotting(self):
+        """
+        Runs all functions required before generating the plots.
+        Used at the start of each plotting function.
+        """
+        self.load_models()
+        self.prepare_test_data()
+        self.calculate_errors()
+
     def plot_error_metrics(self):
         """
         Generates a bar plot comparing MAE, RMSE, and MAPE across all loaded models.
         Displays error values on each bar for clarity.
         """
+        self._use_before_plotting()
+
         if not self.errors:
             print("No error metrics calculated. Run calculate_errors() before plotting.")
             return
@@ -153,6 +175,9 @@ class ModelComparisons:
         Creates scatter plots of actual vs. predicted speed values for each model.
         Displays a reference diagonal line (y=x) to show perfect predictions.
         """
+
+        self._use_before_plotting()
+        
         if not self.models:
             print("No models loaded. Please load models before plotting actual vs. predicted values.")
             return
@@ -169,7 +194,11 @@ class ModelComparisons:
         # Loop over each model to create a scatter plot
         for ax, (model_name, model) in zip(axes, self.models.items()):
             # Generate predictions and adjust to actual speed values
-            y_pred = model.predict(self.X_test).flatten()
+            print(f"MODEL NAME IS: {model_name} AND MODEL IS: {model}")
+            if 'Neural' in model_name:
+                y_pred = model.predict(self.X_test_normalized).flatten()
+            else:
+                y_pred = model.predict(self.X_test).flatten()
             y_pred += self.X_test['value'].values  # Adjust deltas to actual speeds
 
             # Scatter plot of actual vs predicted values

@@ -4,9 +4,9 @@ from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeries
 from keras.models import Sequential
 from keras.layers import Dense
 from keras.wrappers.scikit_learn import KerasRegressor
-from . import normalize_data
+from .helper_functions import normalize_data
 import pickle
-
+import warnings
 
 class ModelTuner:
     """
@@ -14,7 +14,7 @@ class ModelTuner:
     using either TimeSeriesSplit or standard K-Fold cross-validation.
     """
 
-    def __init__(self, X_train, X_test, y_train, y_test, random_state=69, use_ts_split=True, n_splits=3,use_min_max_norm = False):
+    def __init__(self, X_train, X_test, y_train, y_test, random_state=69, use_ts_split=True, n_splits=3,use_min_max_norm = False,best_model_name_string_start = 'best_model_'):
         """
         Initializes ModelTuner with training and test data splits.
 
@@ -35,6 +35,10 @@ class ModelTuner:
         self.n_splits = n_splits
         self.use_min_max_norm = use_min_max_norm
         self.scaler = None  # Will be initialized when tuning ANN
+        self.best_model_name_string_start = best_model_name_string_start #the start of the name of the best model
+        self.XGBoost_model_name = 'XGBoost'
+        self.Random_Forest_model_name = 'Random_Forest'
+        self.ann_model_name = 'Neural_Network'
         self.X_train_normalized, self.X_test_normalized = normalize_data(self.X_train, self.X_test, use_minmax_norm=self.use_min_max_norm)
 
     def get_cv_splitter(self):
@@ -45,6 +49,7 @@ class ModelTuner:
             return TimeSeriesSplit(n_splits=self.n_splits)
         else:
             return KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
+        
 
     def create_ann(self, optimizer='adam', neurons=64, activation='relu', learning_rate=0.001):
         """Builds a Keras sequential model with two dense layers for neural network tuning."""
@@ -65,8 +70,14 @@ class ModelTuner:
         return model
 
 
-    def tune_xgboost(self, params=None):
+    def tune_xgboost(self, model_name=None, params=None):
         """Perform grid search hyperparameter tuning for XGBoost."""
+        if model_name is not None:
+            if model_name != self.XGBoost_model_name:
+                warnings.warn(f"The original model name for XGBoost ({self.XGBoost_model_name}) has been overwritten by the new name: {model_name} ")
+                self.XGBoost_model_name = model_name
+        else:
+            model_name = self.XGBoost_model_name
         default_params = {'max_depth': [6, 8, 10], 'learning_rate': [0.1, 0.01], 'n_estimators': [500, 1000]}
         xgb_params = params if params else default_params
 
@@ -75,10 +86,16 @@ class ModelTuner:
         xgb_grid = GridSearchCV(xgb_model, xgb_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=3)
         xgb_grid.fit(self.X_train, self.y_train)
 
-        self._save_best_grid_model_and_get_errors(grid_models=xgb_grid, model_name='XGBoost')
+        self._save_best_grid_model_and_get_errors(grid_models=xgb_grid, model_name = model_name)
 
-    def tune_random_forest(self, params=None):
+    def tune_random_forest(self, model_name = None, params=None):
         """Perform grid search hyperparameter tuning for Random Forest."""
+        if model_name is not None:
+            if model_name != self.Random_Forest_model_name:
+                warnings.warn(f"The original model name for Random Forest ({self.Random_Forest_model_name}) has been overwritten by the new name: {model_name} ")
+                self.Random_Forest_model_name= model_name
+        else:
+            model_name = self.Random_Forest_model_name
         default_params = {'n_estimators': [100, 200], 'max_depth': [10, 20, None], 'min_samples_split': [2, 5]}
         rf_params = params if params else default_params
 
@@ -87,9 +104,9 @@ class ModelTuner:
         rf_grid = GridSearchCV(rf_model, rf_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=3)
         rf_grid.fit(self.X_train, self.y_train)
 
-        self._save_best_grid_model_and_get_errors(grid_models=rf_grid, model_name='Random Forest')
+        self._save_best_grid_model_and_get_errors(grid_models=rf_grid, model_name=model_name)
 
-    def tune_ann(self, params=None, use_random=False, n_iter=30):
+    def tune_ann(self,  model_name=None, params=None, use_random=False, n_iter=30):
         """
         Perform tuning for ANN using grid search or random search based on specified parameters.
         
@@ -97,7 +114,12 @@ class ModelTuner:
         - use_random (bool): If True, use RandomizedSearchCV; otherwise, use GridSearchCV.
         - n_iter (int): Number of iterations for RandomizedSearchCV.
         """
-
+        if model_name is not None:
+            if model_name != self.ann_model_name:
+                warnings.warn(f"The original model name for Neural Network ({self.ann_model_name}) has been overwritten by the new name: {model_name} ")
+                self.ann_model_name= model_name
+        else: 
+            model_name = self.ann_model_name
         default_params = {
             'batch_size': [32, 64, 128],
             'epochs': [50, 100],
@@ -116,7 +138,7 @@ class ModelTuner:
             nn_grid = GridSearchCV(nn_model, nn_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=3)
         nn_grid.fit(self.X_train_normalized, self.y_train)
 
-        self._save_best_grid_model_and_get_errors(grid_models=nn_grid, model_name='Neural Network')
+        self._save_best_grid_model_and_get_errors(grid_models=nn_grid, model_name=model_name)
 
     def _save_best_grid_model_and_get_errors(self, grid_models, model_name):
         """
@@ -133,7 +155,9 @@ class ModelTuner:
         print(f"Best cross-validation MAE for {model_name}: {best_score:.4f}")
 
         # Evaluate on test set
-        if model_name == 'Neural Network':
+        # If ann, then use normalized values
+        if model_name == self.ann_model_name:
+            print('Predicting y for X_test_normalized...')
             y_pred = best_model.predict(self.X_test_normalized)
         else:
             y_pred = best_model.predict(self.X_test)
@@ -145,13 +169,15 @@ class ModelTuner:
 
     def save_best_model(self, model_name, model):
         """Save a single best model based on its name and type."""
-        if model_name == 'Neural Network':
-            model.model.save(f'best_{model_name.lower().replace(" ", "_")}_model.h5')
-            print(f"{model_name} model saved to best_{model_name.lower().replace(' ', '_')}_model.h5")
+
+        best_model_name_string = self.best_model_name_string_start  + model_name
+        if model_name == self.ann_model_name:
+            model.model.save(f'../models/{best_model_name_string}.h5')
+            print(f"{model_name} model saved to {best_model_name_string}.h5")
         else:
-            with open(f'best_{model_name.lower().replace(" ", "_")}_model.pkl', 'wb') as f:
+            with open(f'../models/{best_model_name_string}.pkl', 'wb') as f:
                 pickle.dump(model, f)
-            print(f"{model_name} model saved to best_{model_name.lower().replace(' ', '_')}_model.pkl")
+            print(f"{model_name} model saved to {best_model_name_string}.pkl")
 
 
 

@@ -9,7 +9,7 @@ class TrafficFlowDataProcessing:
     This includes methods for loading, cleaning, feature engineering, and data splitting.
     """
 
-    def __init__(self, file_path='estimated_average_speed_selected_timestamps-edited-new.csv', column_names=None, lags=20, test_size=0.75, correlation_threshold=0.01,columns_to_use=None,sensor_id_col_name = 'sensor_uid', random_state=69):
+    def __init__(self, file_path='../data/estimated_average_speed_selected_timestamps-edited-new.csv', column_names=None, lags=20, test_size=0.75, correlation_threshold=0.01,columns_to_use=None,sensor_id_col_name = 'sensor_uid', random_state=69):
         """
         Initialize data processing parameters.
 
@@ -41,11 +41,17 @@ class TrafficFlowDataProcessing:
         else:
              self.columns_to_use = columns_to_use
 
-    def load_data(self):
-        """Loads and preprocesses raw data, converting 'date' column to datetime and sorting by it."""
-        self.df = pd.read_csv(self.file_path, names=self.csv_column_names)
+    def load_data(self, nrows=None,sort_by_datetime=True):
+        """
+        Loads and preprocesses raw data, converting 'date' column to datetime and sorting by it.
+
+        Parameters:
+        - nrows (int, optional): Number of rows to load from the CSV file. If None, loads the entire file.
+        """
+        self.df = pd.read_csv(self.file_path, names=self.csv_column_names, nrows=nrows)
         self.df['datetime'] = pd.to_datetime(self.df['date'])
-        self.df = self.df.sort_values('datetime').reset_index(drop=True)
+        if sort_by_datetime:
+            self.df = self.df.sort_values('datetime').reset_index(drop=True)
 
     def preprocess_data(self,select_relevant_cols = False):
         """Run the data preprocessing pipeline to clean and prepare the data."""
