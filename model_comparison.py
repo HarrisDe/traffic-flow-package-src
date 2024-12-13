@@ -1,7 +1,9 @@
+from sklearn.metrics import mean_absolute_error, median_absolute_error, mean_squared_error, mean_absolute_percentage_error
 import pickle
 import warnings
+import os
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error, mean_absolute_percentage_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error,  median_absolute_error
 import numpy as np
 from keras.models import load_model
 import matplotlib.patheffects as PathEffects
@@ -11,6 +13,281 @@ import seaborn as sns
 sns.set_style('darkgrid')
 
 
+class ModelEvaluator:
+    """
+    A class to evaluate multiple models using saved model files (.h5 for Keras or .pkl for scikit-learn compatible models).
+    It computes error metrics and their standard deviations for each model, with optional rounding.
+    """
+
+    def __init__(self, X_test, y_test, rounding=None, discard_zero_mape=False, epsilon=1e-2):
+        """
+        Initialize the ModelEvaluator with test data.
+
+        Parameters
+        ----------
+        X_test : array-like
+            Test feature set.
+        y_test : array-like
+            True values for the test set.
+        rounding : int, optional
+            Number of decimal places to round the results. If None, no rounding is applied.
+        discard_zero_mape : bool, optional
+            If True, discard zero values in y_test for MAPE calculation. Default is False.
+        epsilon : float, optional
+            Small value to replace zero values in y_test for MAPE calculation when discard_zero_mape is False. Default is 1e-10.
+        """
+        self.X_test = X_test
+        self.y_test = y_test
+        self.y_test_before_reconstruction = y_test.copy()
+        self.y_test = self.reconstruct_y(self.y_test)
+        print(
+            f'Reconstrcuted errors of self.y_test, mean value is {np.mean(self.y_test)}')
+        self.rounding = rounding
+        self.discard_zero_mape = discard_zero_mape
+        self.epsilon = epsilon
+        zero_percentage_values = self.calculate_discarded_percentage()
+        print(
+            f'Percentage of zero values in y_test: {zero_percentage_values:.2f}%')
+        if zero_percentage_values > 0:
+            self.calculate_mape_with_handling_zero_values = True
+
+        else:
+            self.calculate_mape_with_handling_zero_values = False
+
+    def calculate_discarded_percentage(self):
+        """
+        Calculate the percentage of data points with zero values in y_test.
+
+        Returns
+        -------
+        discarded_percentage : float
+            The percentage of data points in y_test that are zero.
+        """
+        zero_mask = self.y_test == 0  # Identify where y_test is zero
+        num_zeros = np.sum(zero_mask)  # Count zeros
+        total_points = len(self.y_test)  # Total number of points
+        discarded_percentage = (num_zeros / total_points) * \
+            100  # Calculate percentage
+        return discarded_percentage
+
+    def load_model_from_path(self, model_path):
+        """
+        Load a model from the given path. 
+        If .h5, load a Keras model.
+        If .pkl, load a pickle-serialized model (e.g., scikit-learn, XGBoost).
+        """
+        if model_path.endswith('.h5'):
+            # Keras model
+            return load_model(model_path)
+        elif model_path.endswith('.pkl'):
+            # Pickled scikit-learn model
+            with open(model_path, 'rb') as f:
+                return pickle.load(f)
+        else:
+            raise ValueError(
+                f"Unknown model file extension for {model_path}. Supported: .h5 (Keras), .pkl (pickle)")
+
+    def reconstruct_y(self, y):
+        """
+        Reconstruct the y_test and y_pred values by adding the value column from X_test, in order to have the speed 
+        instead of the delta-speed.
+        """
+        return y + self.X_test['value']
+
+    def get_predictions(self, model_path):
+
+        model = self.load_model_from_path(model_path)
+        if 'neural' in model_path.lower():
+            print('Normalizing data because error is being calculated for ANN.')
+            _, X_test_normalized = normalize_data(X_test=self.X_test)
+            y_pred = model.predict(X_test_normalized).flatten()
+        else:
+            y_pred = model.predict(self.X_test)
+
+        y_pred_before_reconstruction = y_pred.copy()
+        y_pred = self.reconstruct_y(y_pred)
+        print(f'Mean of y_pred is: {np.mean(y_pred)}')
+
+        return y_pred, y_pred_before_reconstruction
+
+    def evaluate_model_from_path(self, model_path):
+        """
+        Evaluate a single model (loaded from model_path) on test data and return four dictionaries:
+        1. metrics: A dictionary of error metrics: MAE, Median Absolute Error, RMSE, MAPE.
+        2. metrics_std: A dictionary of the standard deviations of the per-sample errors related to these metrics.
+        3. naive_metrics: A dictionary of naive error metrics: Naive MAE, Naive Median AE, Naive RMSE, Naive MAPE.
+        4. naive_metrics_std: A dictionary of the standard deviations of the naive errors.
+        """
+
+        # Get predictions
+        y_pred, y_pred_before_reconstruction = self.get_predictions(model_path)
+
+        # Compute per-sample errors˝
+        errors = self.y_test - y_pred
+        abs_errors = np.abs(errors)
+
+        # Model metrics
+        mae = mean_absolute_error(self.y_test, y_pred)
+        print(f"mae from numpy for {model_path} is: {np.mean(abs_errors)}")
+        print(f'mae std from numpy is {np.std(abs_errors)}')
+        median_ae = median_absolute_error(self.y_test, y_pred)
+        rmse = mean_squared_error(self.y_test, y_pred, squared=False)
+        if not self.calculate_mape_with_handling_zero_values:  # self.calculate_mape_with_handling_zero_values
+            mape = mean_absolute_percentage_error(self.y_test, y_pred)
+            print(f'mape from sklearn: {mape}')
+            mape_manual = np.mean(abs_errors / self.y_test)
+            print(f'mape_manual: {mape_manual}')
+
+        # Standard deviation calculations
+        mae_std = np.std(abs_errors)
+        # not sure if this is correct (rmse std should be same as mae std)
+        rmse_std = np.std(errors**2)
+        mape_std = np.std(abs_errors / self.y_test)
+
+        # Naive metrics
+        # use y_test_before_reconstruction for naive (because y_test is originally the speed difference)
+        naive_error = np.abs(self.y_test_before_reconstruction)
+        naive_mae = np.mean(naive_error)
+        naive_mae_std = np.std(naive_error)
+        naive_median_ae = np.median(naive_error)
+        naive_rmse = np.sqrt(np.mean(naive_error**2))
+        # not sure if this is correct (rmse std should be same as mae std)
+        naive_rmse_std = np.std(naive_error**2)
+        if not self.calculate_mape_with_handling_zero_values:
+            naive_mape = np.mean(naive_error / self.y_test)
+            naive_mape_std = np.std(naive_error / self.y_test)
+
+        if self.calculate_mape_with_handling_zero_values:
+            mape, mape_std, naive_mape, naive_mape_std = self.calculate_mape_in_case_of_zero_values(
+                y_pred, y_pred_before_reconstruction)
+
+        # Collect all metrics
+        metrics = {
+            'MAE': mae,
+            'Median Absolute Error': median_ae,
+            'RMSE': rmse,
+            'MAPE': mape*100
+        }
+
+        metrics_std = {
+            'MAE': mae_std,
+            'Median Absolute Error': mae_std,  # Same for simplicity
+            'RMSE': rmse_std,
+            'MAPE': mape_std*100
+        }
+
+        naive_metrics = {
+            'Naive MAE': naive_mae,
+            'Naive Median AE': naive_median_ae,
+            'Naive RMSE': naive_rmse,
+            'Naive MAPE': naive_mape*100
+        }
+
+        naive_metrics_std = {
+            'Naive MAE': naive_mae_std,
+            'Naive Median AE': naive_mae_std,
+            'Naive RMSE': naive_rmse_std,
+            'Naive MAPE': naive_mape_std*100
+        }
+
+        # Apply rounding if specified
+        if self.rounding is not None:
+            metrics = {key: round(value, self.rounding)
+                       for key, value in metrics.items()}
+            metrics_std = {key: round(value, self.rounding)
+                           for key, value in metrics_std.items()}
+            naive_metrics = {key: round(value, self.rounding)
+                             for key, value in naive_metrics.items()}
+            naive_metrics_std = {key: round(
+                value, self.rounding) for key, value in naive_metrics_std.items()}
+
+        return metrics, metrics_std, naive_metrics, naive_metrics_std
+
+    def calculate_mape_in_case_of_zero_values(self, y_pred):
+        """
+        Calculates mape in case of zero values in y_test (reconstructed so that it represents speed)
+        """
+
+        print('Calculating MAPE with handling of zero values in y_test.')
+        # Handle MAPE calculation
+        if self.discard_zero_mape:
+            zero_mask = self.y_test == 0
+            print(
+                f"Discarding {np.sum(zero_mask)} zero values in y_test for MAPE calculation.")
+            y_test_non_zero = self.y_test[~zero_mask]
+            y_test_non_zero_before_reconstruction = self.y_test_before_reconstruction[
+                ~zero_mask]
+            X_test_non_zero = self.X_test[~zero_mask]
+            y_pred_non_zero = y_pred[~zero_mask]
+            ape = np.abs((y_test_non_zero - y_pred_non_zero) /
+                         (y_test_non_zero))
+            mape = np.mean(ape)
+            mape_std = np.std(ape)
+
+            naive_error_non_zero = np.abs(
+                y_test_non_zero_before_reconstruction)
+            naive_ape = np.abs(
+                naive_error_non_zero / (y_test_non_zero_before_reconstruction + X_test_non_zero['value']))
+            naive_mape = np.mean(naive_ape)
+            naive_mape_std = np.std(naive_ape)
+        else:
+            y_test_safe = np.where(self.y_test == 0, self.epsilon, self.y_test)
+            y_test_safe_before_reconstruction = np.where(
+                self.y_test_before_reconstruction == 0, self.epsilon, self.y_test_before_reconstruction)
+            ape = np.abs((y_test_safe - y_pred) / (y_test_safe))
+            mape = np.mean(ape)
+            mape_std = np.std(ape)
+
+            naive_ape = np.abs((y_test_safe_before_reconstruction) /
+                               (y_test_safe_before_reconstruction + self.X_test['value']))
+            naive_mape = np.mean(naive_ape)
+            naive_mape_std = np.std(naive_ape)
+
+            return mape, mape_std, naive_mape, naive_mape_std
+
+    def evaluate_all_models_from_paths(self, models_dict):
+        """
+        Evaluate multiple models given by their file paths on the test data and return four dictionaries:
+        1. A dictionary of error metrics for each model.
+        2. A dictionary of standard deviations for these metrics for each model.
+        3. A dictionary of naive error metrics for each model.
+        4. A dictionary of standard deviations for the naive metrics for each model.
+
+        Parameters
+        ----------
+        models_dict : dict
+            A dictionary where keys are model names and values are model file paths.
+
+        Returns
+        -------
+        errors_all : dict
+            errors_all[model_name] = { 'MAE': ..., 'Median Absolute Error': ..., 'RMSE': ..., 'MAPE': ... }
+        errors_all_std : dict
+            errors_all_std[model_name] = { 'MAE': ..., 'Median Absolute Error': ..., 'RMSE': ..., 'MAPE': ... }
+        errors_all_naive : dict
+            errors_all_naive[model_name] = { 'Naive MAE': ..., 'Naive Median AE': ..., 'Naive RMSE': ..., 'Naive MAPE': ... }
+        errors_all_naive_std : dict
+            errors_all_naive_std[model_name] = { 'Naive MAE': ..., 'Naive Median AE': ..., 'Naive RMSE': ..., 'Naive MAPE': ... }
+        """
+        errors_all = {}
+        errors_all_std = {}
+        errors_all_naive = {}
+        errors_all_naive_std = {}
+
+        for model_name, model_path in models_dict.items():
+            # Evaluate the model
+            metrics, metrics_std, naive_metrics, naive_metrics_std = self.evaluate_model_from_path(
+                model_path)
+
+            # Store results
+            errors_all[model_name] = metrics
+            errors_all_std[model_name] = metrics_std
+            errors_all_naive[model_name] = naive_metrics
+            errors_all_naive_std[model_name] = naive_metrics_std
+
+        return errors_all, errors_all_std, errors_all_naive, errors_all_naive_std
+
+
 class ModelComparisons:
     """
     A class to compare model performance using various error metrics and visualization techniques.
@@ -18,8 +295,9 @@ class ModelComparisons:
     comparison plots of model performance.
     """
 
-    def __init__(self, xgb_filename='../models/best_xgboost_model.pkl', rf_filename='../models/best_random_forest_model.pkl', 
-                 ann_filename='../models/best_neural_network_model.h5', data_file_path='../data/estimated_average_speed_selected_timestamps-edited-new.csv', 
+    def __init__(self, data_path='../data', models_path='../models', xgb_filename='best_xgboost_model.pkl', rf_filename='best_random_forest_model.pkl',
+                 ann_filename='best_neural_network_model.h5', data_file_name='estimated_average_speed_selected_timestamps-edited-new.parquet',
+                 load_xgb=True, load_ann=False, load_rf=False,
                  random_state=69):
         """
         Initializes ModelComparisons with model file paths, data file path, and sample size for evaluation.
@@ -33,13 +311,18 @@ class ModelComparisons:
         """
         # Model file paths
         self.model_filenames = {
-            'XGBoost': xgb_filename,
-            'Random Forest': rf_filename,
-            'Neural Network': ann_filename
+            'XGBoost': os.path.join(models_path, xgb_filename),
+            'Random Forest': os.path.join(models_path, rf_filename),
+            'Neural Network': os.path.join(models_path, ann_filename)
         }
-        self.data_file_path = data_file_path
+        self.data_path = data_path
+        self.data_file_name = data_file_name
         self.random_state = random_state
 
+        # Whether to load each model
+        self.load_xgb = load_xgb
+        self.load_ann = load_ann
+        self.load_rf = load_rf
         # Dictionaries to store loaded models and error metrics
         self.models = {}
         self.errors = {}
@@ -47,18 +330,37 @@ class ModelComparisons:
         # Colors for plotting each model's results
         self.model_colors = {
             'XGBoost': '#6495ED',      # Cornflower Blue
-            'Random Forest': '#FFA07A', # Light Salmon
-            'Neural Network': '#90EE90' # Light Green
+            'Random Forest': '#FFA07A',  # Light Salmon
+            'Neural Network': '#90EE90'  # Light Green
         }
 
-           # Test data (initialized later)
+        # Colors for plotting different horizons
+        self.horizon_colors = {
+            15: '#6495ED',      # Cornflower Blue
+            30: '#FFA07A',      # Light Salmon
+            60: '#90EE90'       # Light Green
+        }
+
+        # Test data (initialized later)
         self.X_test = None
         self.y_test = None
         self.X_test_normalized = None
 
     def load_models(self):
         """Loads each model from the specified file paths. Issues warnings if any files are missing."""
+
+        # Define a mapping between model names and the flags
+        model_load_flags = {
+            'XGBoost': self.load_xgb,
+            'Random Forest': self.load_rf,
+            'Neural Network': self.load_ann
+        }
         for model_name, filename in self.model_filenames.items():
+            # Check if the model should be loaded based on its flag
+            if not model_load_flags.get(model_name, False):
+                print(
+                    f"Skipping {model_name} as its loading flag is set to False.")
+                continue
             try:
                 # Load model based on file type (.pkl for scikit-learn, .h5 for Keras)
                 if filename.endswith('.pkl'):
@@ -68,25 +370,29 @@ class ModelComparisons:
                     self.models[model_name] = load_model(filename)
                 print(f"{model_name} model loaded successfully.")
             except (FileNotFoundError, OSError):
-                warnings.warn(f"File '{filename}' not found. Skipping {model_name} model.")
+                warnings.warn(
+                    f"File '{filename}' not found. Skipping {model_name} model.")
 
-    def prepare_test_data(self):
+    def prepare_test_data(self, horizon=15, test_size=0.3):
         """
         Prepares test data for evaluation by loading, processing, and sampling data from the specified file.
         Assumes data processing class/methods exist for loading and preparing the data.
         """
         # Here, you would call your data processing pipeline to load and prepare test data
         # This example assumes a method or class exists to handle data loading and returns test splits
-        data_processor = TrafficFlowDataProcessing(file_path=self.data_file_path, random_state=self.random_state)
-        X_train, X_test, y_train, y_test = data_processor.prepare_data()
-
+        data_processor = TrafficFlowDataProcessing(data_path=self.data_path,
+                                                   file_name=self.data_file_name, random_state=self.random_state,
+                                                   )
+        X_train, X_test, y_train, y_test = data_processor.get_clean_train_test_split(test_size=test_size, horizon=horizon, add_train_test_flag=True,
+                                                                                     add_spatial_lags=False, reset_index=True, use_weekend_var=False)
 
         # Store prepared test data
         self.X_train = X_train
         self.X_test = X_test
-        #self.y_test = y_test
+        # self.y_test = y_test
         self.y_test = y_test + self.X_test['value'].values
-        self.X_train_normalized, self.X_test_normalized = normalize_data(X_train,X_test)
+        self.X_train_normalized, self.X_test_normalized = normalize_data(
+            X_train, X_test)
 
     def calculate_errors(self):
         """
@@ -99,7 +405,8 @@ class ModelComparisons:
             return
 
         if not hasattr(self, 'X_test') or not hasattr(self, 'y_test'):
-            print("Test data is not prepared. Please run prepare_test_data() before calculating errors.")
+            print(
+                "Test data is not prepared. Please run prepare_test_data() before calculating errors.")
             return
 
         # Loop over each model and calculate error metrics
@@ -110,12 +417,14 @@ class ModelComparisons:
                 y_pred = model.predict(self.X_test_normalized).flatten()
             else:
                 y_pred = model.predict(self.X_test).flatten()
-            
-            y_pred += self.X_test['value'].values  # Adjust predictions (speed delta) to actual speeds if needed
+
+            # Adjust predictions (speed delta) to actual speeds if needed
+            y_pred += self.X_test['value'].values
 
             # Calculate error metrics and store them
             mae = mean_absolute_error(self.y_test, y_pred)
-            rmse = root_mean_squared_error(self.y_test, y_pred)
+            median_ae = median_absolute_error(self.y_test, y_pred)
+            rmse = mean_squared_error(self.y_test, y_pred, squared=False)
             mape = mean_absolute_percentage_error(self.y_test, y_pred)
 
             # Store calculated errors
@@ -124,7 +433,15 @@ class ModelComparisons:
                 'RMSE': rmse,
                 'MAPE': mape
             }
-            print(f"Calculated errors for {model_name}: MAE={mae:.4f}, RMSE={rmse:.4f}, MAPE={mape:.4f}")
+            print(
+                f"Calculated errors for {model_name}: MAE={mae:.4f}, RMSE={rmse:.4f}, MAPE={mape:.4f}")
+
+            self.errors_all[model_name] = {
+                'MAE': mae,
+                'Median Absolute Error': median_ae,
+                'RMSE': rmse,
+                'MAPE': mape
+            }
 
     def _use_before_plotting(self):
         """
@@ -152,15 +469,20 @@ class ModelComparisons:
 
         # Plot each metric in a separate subplot
         for i, metric in enumerate(metrics):
-            metric_values = [self.errors[model][metric] for model in self.errors]
+            metric_values = [self.errors[model][metric]
+                             for model in self.errors]
             model_names = list(self.errors.keys())
-            colors = [self.model_colors.get(model, '#D3D3D3') for model in model_names]  # Default: Light Gray
+            # Default: Light Gray
+            colors = [self.model_colors.get(model, '#D3D3D3')
+                      for model in model_names]
 
             # Create bar plot for each metric
-            bars = axes[i].bar(model_names, metric_values, color=colors, edgecolor='black', linewidth=0.7)
+            bars = axes[i].bar(model_names, metric_values,
+                               color=colors, edgecolor='black', linewidth=0.7)
             axes[i].set_title(f"{metric} Comparison", fontsize=14)
             axes[i].set_ylabel(metric)
-            axes[i].yaxis.grid(True, linestyle='--', linewidth=0.5, color='gray', alpha=0.7)
+            axes[i].yaxis.grid(True, linestyle='--',
+                               linewidth=0.5, color='gray', alpha=0.7)
 
             # Add text labels on bars
             for bar, value in zip(bars, metric_values):
@@ -177,13 +499,15 @@ class ModelComparisons:
         """
 
         self._use_before_plotting()
-        
+
         if not self.models:
-            print("No models loaded. Please load models before plotting actual vs. predicted values.")
+            print(
+                "No models loaded. Please load models before plotting actual vs. predicted values.")
             return
 
         if not hasattr(self, 'X_test') or not hasattr(self, 'y_test'):
-            print("Test data is not prepared. Please run prepare_test_data() before plotting.")
+            print(
+                "Test data is not prepared. Please run prepare_test_data() before plotting.")
             return
 
         # Create a scatter plot for each model's predictions
@@ -199,10 +523,12 @@ class ModelComparisons:
                 y_pred = model.predict(self.X_test_normalized).flatten()
             else:
                 y_pred = model.predict(self.X_test).flatten()
-            y_pred += self.X_test['value'].values  # Adjust deltas to actual speeds
+            # Adjust deltas to actual speeds
+            y_pred += self.X_test['value'].values
 
             # Scatter plot of actual vs predicted values
-            ax.scatter(self.y_test, y_pred, alpha=0.1, color=self.model_colors.get(model_name, '#D3D3D3'))
+            ax.scatter(self.y_test, y_pred, alpha=0.1,
+                       color=self.model_colors.get(model_name, '#D3D3D3'))
             ax.set_title(f"{model_name} - Actual vs Predicted", fontsize=14)
             ax.set_xlabel("Actual Speed")
             ax.set_ylabel("Predicted Speed")
@@ -211,6 +537,377 @@ class ModelComparisons:
             max_val = max(max(self.y_test), max(y_pred))
             min_val = min(min(self.y_test), min(y_pred))
             ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_model_error_details(self, model_name):
+        """
+        Creates a 2x2 grid plot showing MAE, Median Absolute Error, RMSE, and MAPE
+        for a specific model.
+
+        Parameters:
+        - model_name (str): The name of the model to plot error details for.
+        """
+
+        self._use_before_plotting()
+
+        if model_name not in self.errors:
+            print(f"No error data available for model '{model_name}'.")
+            return
+
+        # Define metrics to plot
+        metrics = ['MAE', 'Median Absolute Error', 'RMSE', 'MAPE']
+        metric_values = [
+            self.errors_all[model_name]['MAE'],
+            self.errors[model_name].get('Median Absolute Error', None),
+            self.errors[model_name]['RMSE'],
+            self.errors[model_name]['MAPE']
+        ]
+
+        # If Median Absolute Error is not calculated, assign a placeholder value
+        if metric_values[1] is None:
+            warnings.warn(
+                f"Median Absolute Error is not available for model '{model_name}'.")
+            metric_values[1] = 0
+
+        # Create 2x2 grid plot
+        fig, axes = plt.subplots(2, 2, figsize=(16, 6))
+        axes = axes.flatten()
+        colors = self.model_colors.get(
+            model_name, '#D3D3D3')  # Default: Light Gray
+
+        titles = [
+            "Mean Absolute Error (kph)",
+            "Median Absolute Error (kph)",
+            "Root Mean Squared Error (kph)",
+            "Mean Absolute Percentage Error (%)"
+        ]
+
+        for ax, metric, value, title in zip(axes, metrics, metric_values, titles):
+            # Bar plot for each metric
+            ax.bar([model_name], [value], color=colors,
+                   edgecolor='black', linewidth=0.7)
+            ax.set_title(title, fontsize=14)
+            ax.set_ylabel("Error")
+            ax.yaxis.grid(True, linestyle='--', linewidth=0.5,
+                          color='gray', alpha=0.7)
+
+            # Add text label on the bar
+            ax.text(0, value + 0.01 * max(metric_values),
+                    f'{value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
+
+        plt.tight_layout()
+        plt.show()
+
+    class ModelComparisons:
+        """
+        A class to compare model performance using various error metrics and visualization techniques.
+        This includes loading pre-trained models, calculating errors on test data, and displaying
+        comparison plots of model performance.
+        """
+
+    def __init__(self, data_path='../data', models_path='../models', xgb_filename='best_xgboost_model.pkl', rf_filename='best_random_forest_model.pkl',
+                 ann_filename='best_neural_network_model.h5', data_file_name='estimated_average_speed_selected_timestamps-edited-new.parquet',
+                 load_xgb=True, load_ann=False, load_rf=False,
+                 random_state=69):
+        """
+        Initializes ModelComparisons with model file paths, data file path, and sample size for evaluation.
+
+        Parameters:
+        - xgb_filename (str): File path to the saved XGBoost model.
+        - rf_filename (str): File path to the saved Random Forest model.
+        - ann_filename (str): File path to the saved Neural Network model.
+        - data_file_path (str): Path to the CSV file for test data preparation.
+        - random_state (int): Seed for reproducibility in random sampling.
+        """
+        # Model file paths
+        self.model_filenames = {
+            'XGBoost': os.path.join(models_path, xgb_filename),
+            'Random Forest': os.path.join(models_path, rf_filename),
+            'Neural Network': os.path.join(models_path, ann_filename)
+        }
+        self.data_path = data_path
+        self.data_file_name = data_file_name
+        self.random_state = random_state
+
+        # Whether to load each model
+        self.load_xgb = load_xgb
+        self.load_ann = load_ann
+        self.load_rf = load_rf
+        # Dictionaries to store loaded models and error metrics
+        self.models = {}
+        self.errors = {}
+
+        # Colors for plotting each model's results
+        self.model_colors = {
+            'XGBoost': '#6495ED',      # Cornflower Blue
+            'Random Forest': '#FFA07A',  # Light Salmon
+            'Neural Network': '#90EE90'  # Light Green
+        }
+
+        # Colors for plotting different horizons
+        self.horizon_colors = {
+            15: '#6495ED',      # Cornflower Blue
+            30: '#FFA07A',      # Light Salmon
+            60: '#90EE90'       # Light Green
+        }
+
+        # Test data (initialized later)
+        self.X_test = None
+        self.y_test = None
+        self.X_test_normalized = None
+
+    def load_models(self):
+        """Loads each model from the specified file paths. Issues warnings if any files are missing."""
+
+        # Define a mapping between model names and the flags
+        model_load_flags = {
+            'XGBoost': self.load_xgb,
+            'Random Forest': self.load_rf,
+            'Neural Network': self.load_ann
+        }
+        for model_name, filename in self.model_filenames.items():
+            # Check if the model should be loaded based on its flag
+            if not model_load_flags.get(model_name, False):
+                print(
+                    f"Skipping {model_name} as its loading flag is set to False.")
+                continue
+            try:
+                # Load model based on file type (.pkl for scikit-learn, .h5 for Keras)
+                if filename.endswith('.pkl'):
+                    with open(filename, 'rb') as f:
+                        self.models[model_name] = pickle.load(f)
+                elif filename.endswith('.h5'):
+                    self.models[model_name] = load_model(filename)
+                print(f"{model_name} model loaded successfully.")
+            except (FileNotFoundError, OSError):
+                warnings.warn(
+                    f"File '{filename}' not found. Skipping {model_name} model.")
+
+    def prepare_test_data(self, horizon=15, test_size=0.3):
+        """
+        Prepares test data for evaluation by loading, processing, and sampling data from the specified file.
+        Assumes data processing class/methods exist for loading and preparing the data.
+        """
+        # Here, you would call your data processing pipeline to load and prepare test data
+        # This example assumes a method or class exists to handle data loading and returns test splits
+        data_processor = TrafficFlowDataProcessing(data_path=self.data_path,
+                                                   file_name=self.data_file_name, random_state=self.random_state,
+                                                   )
+        X_train, X_test, y_train, y_test = data_processor.get_clean_train_test_split(test_size=test_size, horizon=horizon, add_train_test_flag=True,
+                                                                                     add_spatial_lags=False, reset_index=True, use_weekend_var=False)
+
+        # Store prepared test data
+        self.X_train = X_train
+        self.X_test = X_test
+        # self.y_test = y_test
+        self.y_test = y_test + self.X_test['value'].values
+        self.X_train_normalized, self.X_test_normalized = normalize_data(
+            X_train, X_test)
+
+    def calculate_errors(self):
+        """
+        Calculates various error metrics for each loaded model using the sampled test data.
+        Metrics calculated: Mean Absolute Error (MAE), Root Mean Squared Error (RMSE), and
+        Mean Absolute Percentage Error (MAPE).
+        """
+        if not self.models:
+            print("No models loaded. Cannot calculate errors.")
+            return
+
+        if not hasattr(self, 'X_test') or not hasattr(self, 'y_test'):
+            print(
+                "Test data is not prepared. Please run prepare_test_data() before calculating errors.")
+            return
+
+        # Loop over each model and calculate error metrics
+        for model_name, model in self.models.items():
+            # Generate predictions for the test set
+            if 'Neural' in model_name:
+                print('Normalizing X_test because error is being calculated for ANN.')
+                y_pred = model.predict(self.X_test_normalized).flatten()
+            else:
+                y_pred = model.predict(self.X_test).flatten()
+
+            # Adjust predictions (speed delta) to actual speeds if needed
+            y_pred += self.X_test['value'].values
+
+            # Calculate error metrics and store them
+            mae = mean_absolute_error(self.y_test, y_pred)
+            median_ae = median_absolute_error(self.y_test, y_pred)
+            rmse = mean_squared_error(self.y_test, y_pred, squared=False)
+            mape = mean_absolute_percentage_error(self.y_test, y_pred)
+
+            # Store calculated errors
+            self.errors[model_name] = {
+                'MAE': mae,
+                'RMSE': rmse,
+                'MAPE': mape
+            }
+            print(
+                f"Calculated errors for {model_name}: MAE={mae:.4f}, RMSE={rmse:.4f}, MAPE={mape:.4f}")
+
+            self.errors_all[model_name] = {
+                'MAE': mae,
+                'Median Absolute Error': median_ae,
+                'RMSE': rmse,
+                'MAPE': mape
+            }
+
+    def _use_before_plotting(self):
+        """
+        Runs all functions required before generating the plots.
+        Used at the start of each plotting function.
+        """
+        self.load_models()
+        self.prepare_test_data()
+        self.calculate_errors()
+
+    def plot_error_metrics(self):
+        """
+        Generates a bar plot comparing MAE, RMSE, and MAPE across all loaded models.
+        Displays error values on each bar for clarity.
+        """
+        self._use_before_plotting()
+
+        if not self.errors:
+            print("No error metrics calculated. Run calculate_errors() before plotting.")
+            return
+
+        # Define metrics to plot
+        metrics = ['MAE', 'RMSE', 'MAPE']
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+        # Plot each metric in a separate subplot
+        for i, metric in enumerate(metrics):
+            metric_values = [self.errors[model][metric]
+                             for model in self.errors]
+            model_names = list(self.errors.keys())
+            # Default: Light Gray
+            colors = [self.model_colors.get(model, '#D3D3D3')
+                      for model in model_names]
+
+            # Create bar plot for each metric
+            bars = axes[i].bar(model_names, metric_values,
+                               color=colors, edgecolor='black', linewidth=0.7)
+            axes[i].set_title(f"{metric} Comparison", fontsize=14)
+            axes[i].set_ylabel(metric)
+            axes[i].yaxis.grid(True, linestyle='--',
+                               linewidth=0.5, color='gray', alpha=0.7)
+
+            # Add text labels on bars
+            for bar, value in zip(bars, metric_values):
+                axes[i].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01 * max(metric_values),
+                             f'{value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_actual_vs_predicted(self):
+        """
+        Creates scatter plots of actual vs. predicted speed values for each model.
+        Displays a reference diagonal line (y=x) to show perfect predictions.
+        """
+
+        self._use_before_plotting()
+
+        if not self.models:
+            print(
+                "No models loaded. Please load models before plotting actual vs. predicted values.")
+            return
+
+        if not hasattr(self, 'X_test') or not hasattr(self, 'y_test'):
+            print(
+                "Test data is not prepared. Please run prepare_test_data() before plotting.")
+            return
+
+        # Create a scatter plot for each model's predictions
+        fig, axes = plt.subplots(1, len(self.models), figsize=(15, 5))
+        if len(self.models) == 1:
+            axes = [axes]  # Ensure axes is a list even if only one model
+
+        # Loop over each model to create a scatter plot
+        for ax, (model_name, model) in zip(axes, self.models.items()):
+            # Generate predictions and adjust to actual speed values
+            print(f"MODEL NAME IS: {model_name} AND MODEL IS: {model}")
+            if 'Neural' in model_name:
+                y_pred = model.predict(self.X_test_normalized).flatten()
+            else:
+                y_pred = model.predict(self.X_test).flatten()
+            # Adjust deltas to actual speeds
+            y_pred += self.X_test['value'].values
+
+            # Scatter plot of actual vs predicted values
+            ax.scatter(self.y_test, y_pred, alpha=0.1,
+                       color=self.model_colors.get(model_name, '#D3D3D3'))
+            ax.set_title(f"{model_name} - Actual vs Predicted", fontsize=14)
+            ax.set_xlabel("Actual Speed")
+            ax.set_ylabel("Predicted Speed")
+
+            # Add a diagonal reference line (y=x) for perfect predictions
+            max_val = max(max(self.y_test), max(y_pred))
+            min_val = min(min(self.y_test), min(y_pred))
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_model_error_details(self, model_name):
+        """
+        Creates a 2x2 grid plot showing MAE, Median Absolute Error, RMSE, and MAPE
+        for a specific model.
+
+        Parameters:
+        - model_name (str): The name of the model to plot error details for.
+        """
+
+        self._use_before_plotting()
+
+        if model_name not in self.errors:
+            print(f"No error data available for model '{model_name}'.")
+            return
+
+        # Define metrics to plot
+        metrics = ['MAE', 'Median Absolute Error', 'RMSE', 'MAPE']
+        metric_values = [
+            self.errors_all[model_name]['MAE'],
+            self.errors[model_name].get('Median Absolute Error', None),
+            self.errors[model_name]['RMSE'],
+            self.errors[model_name]['MAPE']
+        ]
+
+        # If Median Absolute Error is not calculated, assign a placeholder value
+        if metric_values[1] is None:
+            warnings.warn(
+                f"Median Absolute Error is not available for model '{model_name}'.")
+            metric_values[1] = 0
+
+        # Create 2x2 grid plot
+        fig, axes = plt.subplots(2, 2, figsize=(16, 6))
+        axes = axes.flatten()
+        colors = self.model_colors.get(
+            model_name, '#D3D3D3')  # Default: Light Gray
+
+        titles = [
+            "Mean Absolute Error (kph)",
+            "Median Absolute Error (kph)",
+            "Root Mean Squared Error (kph)",
+            "Mean Absolute Percentage Error (%)"
+        ]
+
+        for ax, metric, value, title in zip(axes, metrics, metric_values, titles):
+            # Bar plot for each metric
+            ax.bar([model_name], [value], color=colors,
+                   edgecolor='black', linewidth=0.7)
+            ax.set_title(title, fontsize=14)
+            ax.set_ylabel("Error")
+            ax.yaxis.grid(True, linestyle='--', linewidth=0.5,
+                          color='gray', alpha=0.7)
+
+            # Add text label on the bar
+            ax.text(0, value + 0.01 * max(metric_values),
+                    f'{value:.2f}', ha='center', va='bottom', fontsize=10, color='black')
 
         plt.tight_layout()
         plt.show()
