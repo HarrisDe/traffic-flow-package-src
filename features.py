@@ -134,6 +134,9 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
     def transform(self, df, current_smoothing=None, prev_smoothing=None):
         self._log("Adding adjacent sensor features.")
 
+        if self.spatial_adj is None:
+            self._log("No adjacent sensors to add. Skipping.")
+            return df, []
         if self.spatial_adj < 1:
             self._log("No adjacent sensors to add. Skipping.")
             return df, []

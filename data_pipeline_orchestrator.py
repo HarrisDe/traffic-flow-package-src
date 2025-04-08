@@ -183,7 +183,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         X_test = test_df.drop(columns=['target'])
         y_test = test_df['target']
         
-        cols_to_drop = ['sensor_uid', 'target_total_speed', 'target_speed_delta','date','sensor_id']
+        cols_to_drop = ['sensor_id', 'target_total_speed', 'target_speed_delta','date','sensor_id','test_set']
         
         # Drop unwanted columns 
         for df in [X_train,X_test]:

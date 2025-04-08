@@ -5,7 +5,7 @@ from .features import *
 from .constants import *
 from .helper_utils import *
 from .model_tuning import *
-#from .model_comparison import *  Need to fix this import by using data_pipeline_orchestrator instead of TrafficFlowDataProcessing
+from .model_comparison import *  #Need to fix this import by using data_pipeline_orchestrator instead of TrafficFlowDataProcessing
 
 
 # Specify classes available for import when using *

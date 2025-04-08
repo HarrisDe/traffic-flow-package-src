@@ -608,8 +608,8 @@ class ModelTuner_:
     def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None):
         model_name = model_name or self.XGBoost_model_name
         objective = objective or 'reg:squarederror'
-        default_params = {'max_depth': [10, 8, 6], 'learning_rate': [
-            0.1, 0.01], 'n_estimators': [1000, 500, 200]}
+        default_params = {'max_depth': [10, 8, 6, 4], 'learning_rate': [
+            0.1, 0.01], 'n_estimators': [1000, 750, 500, 250]}
         # Use provided params if available, else use default
         grid_params = params if params is not None else default_params
 
