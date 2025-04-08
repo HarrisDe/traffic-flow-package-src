@@ -8,7 +8,7 @@ import numpy as np
 from keras.models import load_model
 import matplotlib.patheffects as PathEffects
 from .data_processing import TrafficFlowDataProcessing
-from .helper_functions import normalize_data
+from .helper_utils import normalize_data
 import seaborn as sns
 sns.set_style('darkgrid')
 

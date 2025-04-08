@@ -7,7 +7,15 @@ import pickle
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import numpy as np
 
+import logging
 
+class LoggingMixin:
+    def __init__(self, disable_logs=False):
+        self.disable_logs = disable_logs
+
+    def _log(self, message):
+        if not self.disable_logs:
+            logging.info(message)
 
 
 def normalize_data(X_train=None, X_test=None, use_minmax_norm=False, use_full_data=False):
@@ -73,6 +81,7 @@ def normalize_data(X_train=None, X_test=None, use_minmax_norm=False, use_full_da
             # Scale only test data if training data is not provided
             X_test_normalized = scaler.fit_transform(X_test)
             X_train_normalized = None
+    
 
     return X_train_normalized, X_test_normalized
 

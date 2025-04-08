@@ -7,7 +7,7 @@ from tensorflow import keras
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.wrappers.scikit_learn import KerasRegressor
-from .helper_functions import normalize_data
+from .helper_utils import normalize_data
 import pickle
 import warnings
 import numpy as np
@@ -604,6 +604,7 @@ class ModelTuner_:
         print(f"Median Absolute Error: {median_ae:.2f} ± {median_ae_std:.2f}")
         print(f"MAPE: {mape:.2f}% ± {mape_std:.2f}%")
 
+    
     def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None):
         model_name = model_name or self.XGBoost_model_name
         objective = objective or 'reg:squarederror'
@@ -623,7 +624,7 @@ class ModelTuner_:
             )
         else:
             xgb_model = xgb.XGBRegressor(
-                objective='reg:squarederror',
+                objective=objective,
                 n_jobs=-1,
                 random_state=self.random_state
             )
