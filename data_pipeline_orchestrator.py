@@ -73,7 +73,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         quantile_threshold=0.9, 
         quantile_percentage=0.65, 
         lower_bound=0.01, 
-        upper_bound=0.99
+        upper_bound=0.99,
+        use_median_instead_of_mean_smoothing=True,
     ):
         
         # Determine current smoothing strategy ID
@@ -100,6 +101,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             test_size=test_size,
             diagnose_extreme_changes=diagnose_extreme_changes,
             add_gman_predictions=add_gman_predictions,
+            use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
         )
         self.df_orig = loader.df_orig
         self.first_test_timestamp = loader.first_test_timestamp

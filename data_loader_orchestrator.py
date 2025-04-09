@@ -155,6 +155,7 @@ class InitialTrafficDataLoader(LoggingMixin):
                  filter_on_train_only=True,
                  filter_extreme_changes=True,
                  smooth_speeds=True,
+                 use_median_instead_of_mean=True,
                  relative_threshold=0.7,
                  test_size=1/3,
                  diagnose_extreme_changes=False,
@@ -167,7 +168,7 @@ class InitialTrafficDataLoader(LoggingMixin):
         if filter_extreme_changes:
             self.filter_extreme_changes(relative_threshold=relative_threshold)
         if smooth_speeds:
-            self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only)
+            self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only,use_median_instead_of_mean=use_median_instead_of_mean)
         if add_gman_predictions:
             self.add_gman_predictions()
         self.df[self.value_col] = self.df[self.value_col].astype(np.float32)
