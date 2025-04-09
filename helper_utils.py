@@ -3,10 +3,10 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import numpy as np
 import pandas as pd
 import pickle
-
+import os
+import glob
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import numpy as np
-
 import logging
 
 class LoggingMixin:
@@ -16,7 +16,81 @@ class LoggingMixin:
     def _log(self, message):
         if not self.disable_logs:
             logging.info(message)
+            
+            
+def get_filtered_X(X_train, lags, spatial_adj):
+    """
+    Filters the input DataFrame by dropping lag and spatial adjacency features 
+    that exceed the specified lag and spatial adjacency limits. To be used so
+    that all the lags and spatial adjacencies are calculated only once and then 
+    the model is evaluated on the filtered dataset..
 
+    Parameters
+    ----------
+    X_train : pd.DataFrame
+        The input DataFrame containing features including temporal lags and spatial adjacency sensors.
+    lags : int
+        The number of temporal lag features to retain (e.g., if lags=20, keep relative_diff_lag1 to relative_diff_lag20).
+    spatial_adj : int
+        The number of upstream/downstream adjacent sensor features to retain (e.g., if spatial_adj=3, 
+        keep upstream_sensor_1 to upstream_sensor_3 and downstream_sensor_1 to downstream_sensor_3).
+
+    Returns
+    -------
+    pd.DataFrame
+        A filtered DataFrame with only the specified number of lag and spatial adjacency features retained.
+    """
+
+    # Make a copy to avoid modifying the original DataFrame
+    X = X_train.copy()
+    
+    # Define the maximum available number of lag features
+    max_lags = 30
+    if lags < max_lags:
+        # Create list of lag features to drop
+        drop_lags = [f'relative_diff_lag{i}' for i in range(lags + 1, max_lags + 1)]
+        # Drop them if present
+        X = X.drop(columns=[col for col in drop_lags if col in X.columns], errors='ignore')
+    
+    # Define the maximum number of spatial adjacencies (up/down stream sensors)
+    max_adj = 5
+    if spatial_adj < max_adj:
+        # Drop upstream and downstream sensor features beyond the selected number
+        for i in range(spatial_adj + 1, max_adj + 1):
+            for direction in ['downstream', 'upstream']:
+                col = f'{direction}_sensor_{i}'
+                if col in X.columns:
+                    X = X.drop(columns=col)
+
+    return X
+
+
+
+def load_gman_results(p, q, directory="saved_gman_results", pattern_template="gman_results_P{p}_Q{q}*.parquet"):
+    """
+    Load previously saved GMAN results from Parquet files that match a given filename pattern.
+    If there are multiple matching files, the first one is selected.
+
+    Args:
+        p (int): Number of history steps (including the current timestep).
+        q (int): Prediction horizon (number of future steps to forecast).
+        directory (str): Directory where results are stored.
+        pattern_template (str): Pattern template to match filenames. Should include '{p}' and '{q}' placeholders.
+
+    Returns:
+        DataFrame or None: Loaded results DataFrame, or None if no matching files are found.
+    """
+    # Create full file search pattern using provided template
+    file_pattern = os.path.join(directory, pattern_template.format(p=p, q=q))
+    
+    # Search for matching files
+    matching_files = glob.glob(file_pattern)
+    if matching_files:
+        print(f"Found files: {matching_files}")
+        return pd.read_parquet(matching_files[0])  # Return the first match
+    else:
+        print(f"No files found matching {file_pattern}")
+        return None
 
 def normalize_data(X_train=None, X_test=None, use_minmax_norm=False, use_full_data=False):
     """
@@ -160,132 +234,3 @@ def optimize_dtypes(df):
     return df
 
 
-def get_adjacent_sensors_dict(adj_sensors_csv_loc, nr_of_adj_sensors, delete_duplicate_rows=True):
-    """
-    Create a dictionary of sensor IDs with their adjacent sensors and distances.
-
-    Args:
-        adj_sensors_csv_loc (str): File path to the CSV containing sensor data.
-        nr_of_adj_sensors (int): Number of adjacent sensors to retrieve.
-        delete_duplicate_rows (bool): Whether to remove rows where the first and second columns are the same.
-
-    Returns:
-        dict: A dictionary where each key is a sensor ID and the value is a dictionary
-              containing adjacent sensors and distances.
-    """
-    # Load the sensor data from the CSV
-    sensor_data = pd.read_csv(adj_sensors_csv_loc, delimiter=';')
-    sensor_data.columns = sensor_data.columns.str.strip()  # Ensure no extra whitespace
-    sensor_data['distance'] = pd.to_numeric(
-        sensor_data['distance'], errors='coerce')  # Ensure numeric distance
-
-    # Remove rows where the first and second columns are the same if delete_duplicate_rows is True
-    if delete_duplicate_rows:
-        duplicate_rows = sensor_data[sensor_data['point_dgl_loc']
-                                     == sensor_data['conn_points_dgl_loc']]
-        print("Rows where the first and second columns are the same:")
-        print(duplicate_rows)
-
-        sensor_data = sensor_data[sensor_data['point_dgl_loc']
-                                  != sensor_data['conn_points_dgl_loc']]
-
-    # Extract unique sensor IDs
-    sensor_ids = pd.concat(
-        [sensor_data['point_dgl_loc'], sensor_data['conn_points_dgl_loc']]).unique()
-
-    # Create a dictionary to hold the result
-    sensor_dict = {sensor_id: {"previous_sensors": [], "distance": []}
-                   for sensor_id in sensor_ids}
-
-    # Build a lookup for previous sensor and distance
-    for sensor_id in sensor_ids:
-        # Temporary lists to store previous sensors and distances
-        prev_sensors = []
-        distances = []
-
-        current_sensor = sensor_id
-
-        # Traverse backwards up to the number of required previous sensors
-        while len(prev_sensors) < nr_of_adj_sensors:
-            # Find the row where current_sensor appears in conn_points_dgl_loc
-            row = sensor_data[sensor_data['conn_points_dgl_loc']
-                              == current_sensor]
-
-            if row.empty:
-                # If no previous sensor exists, append None for the remaining slots
-                prev_sensors.extend(
-                    [None] * (nr_of_adj_sensors - len(prev_sensors)))
-                distances.extend([None] * (nr_of_adj_sensors - len(distances)))
-                break
-            else:
-                # Get the previous sensor and distance
-                previous_sensor = row.iloc[0]['point_dgl_loc']
-                distance = row.iloc[0]['distance']
-
-                prev_sensors.append(previous_sensor)
-                distances.append(distance)
-
-                # Move to the previous sensor
-                current_sensor = previous_sensor
-
-        # Ensure the lengths of the lists match nr_of_adj_sensors
-        while len(prev_sensors) < nr_of_adj_sensors:
-            prev_sensors.append(None)
-            distances.append(None)
-
-        # Update the dictionary
-        sensor_dict[sensor_id]['previous_sensors'] = prev_sensors
-        sensor_dict[sensor_id]['distance'] = distances
-
-    return sensor_dict
-
-
-def get_surrounding_sensors(sensor_dict, sensor_id, n):
-    """
-    Get N sensors before and N sensors after a specific sensor ID.
-
-    Args:
-        sensor_dict (dict): Dictionary generated by `get_adjacent_sensors_dict`.
-        sensor_id (str): The sensor ID for which to retrieve surrounding sensors.
-        n (int): The number of sensors before and after to retrieve.
-
-    Returns:
-        dict: A dictionary with two keys: 'previous_sensors' and 'next_sensors'.
-              Each key contains a list of N sensors. If there are fewer than N sensors,
-              the remaining entries are filled with None.
-    """
-    # Initialize the result dictionary
-    result = {
-        "previous_sensors": [],
-        "next_sensors": []
-    }
-
-    # Get the previous sensors
-    previous_sensors = sensor_dict[sensor_id]['previous_sensors']
-    result["previous_sensors"] = previous_sensors[:n] + \
-        [None] * (n - len(previous_sensors))
-
-    # Find the next sensors
-    next_sensors = []
-    current_sensor = sensor_id
-    while len(next_sensors) < n:
-        # Find the row where the current_sensor is the starting point
-        next_sensor_data = [
-            key for key, value in sensor_dict.items()
-            if value['previous_sensors'] and value['previous_sensors'][0] == current_sensor
-        ]
-
-        if not next_sensor_data:
-            # If no next sensor is found, fill with None
-            next_sensors.extend([None] * (n - len(next_sensors)))
-            break
-        else:
-            next_sensor = next_sensor_data[0]
-            next_sensors.append(next_sensor)
-            current_sensor = next_sensor
-
-    # Ensure the list has exactly N elements
-    result["next_sensors"] = next_sensors[:n] + \
-        [None] * (n - len(next_sensors))
-
-    return result
