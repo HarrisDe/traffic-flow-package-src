@@ -600,12 +600,12 @@ class ModelTuner_:
                              absolute_errors / y_true) * 100
         mape = np.nanmean(safe_mape)
         mape_std = np.nanstd(safe_mape)
-        print(f"MAE: {mae:.2f} ± {mae_std:.2f}")
-        print(f"Median Absolute Error: {median_ae:.2f} ± {median_ae_std:.2f}")
-        print(f"MAPE: {mape:.2f}% ± {mape_std:.2f}%")
+        # print(f"MAE: {mae:.2f} ± {mae_std:.2f}")
+        # print(f"Median Absolute Error: {median_ae:.2f} ± {median_ae_std:.2f}")
+        # print(f"MAPE: {mape:.2f}% ± {mape_std:.2f}%")
 
     
-    def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None):
+    def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None,suppress_output=False,n_jobs=-1):
         model_name = model_name or self.XGBoost_model_name
         objective = objective or 'reg:squarederror'
         default_params = {'max_depth': [10, 8, 6, 4], 'learning_rate': [
@@ -619,20 +619,25 @@ class ModelTuner_:
                 objective=objective,
                 tree_method='gpu_hist',
                 predictor='gpu_predictor',
-                n_jobs=-1,
-                random_state=self.random_state
+                n_jobs=n_jobs,
+                random_state=self.random_state,
+                verbosity=0 if suppress_output else 1
+                
             )
         else:
             xgb_model = xgb.XGBRegressor(
                 objective=objective,
-                n_jobs=-1,
-                random_state=self.random_state
+                n_jobs=1,
+                random_state=self.random_state,
+                verbosity=0 if suppress_output else 1
             )
 
         cv_splitter = self.get_cv_splitter()
-        print(f'XGBoost objective: {objective}')
+        if not suppress_output:
+
+            print(f'XGBoost objective: {objective}')
         grid = GridSearchCV(
-            xgb_model, grid_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=3)
+            xgb_model, grid_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=0 if suppress_output else 3)
         grid.fit(self.X_train, self.y_train)
         best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
             grid, model_name)
@@ -785,18 +790,18 @@ class ModelTuner_:
         """Saves the best model and returns its file path, while printing evaluation errors."""
         best_model = grid_models.best_estimator_
         y_pred = best_model.predict(self.X_test)
-        print(f"Evaluation results for {model_name}:")
+        #print(f"Evaluation results for {model_name}:")
         self._get_errors(self.y_test, y_pred)
 
         # Compute naive baseline errors
         naive_predictions = np.abs(
             self.X_test['value'] - (self.y_test + self.X_test['value']))
-        print("Naive model evaluation:")
+        #print("Naive model evaluation:")
         self._get_errors(self.y_test, naive_predictions)
 
         # Print best parameters explicitly
         best_params_ = grid_models.best_params_
-        print(f"\nBest parameters for {model_name}: {best_params_}")
+        #print(f"\nBest parameters for {model_name}: {best_params_}")
 
         best_model_path = self.save_best_model(model_name, best_model)
         return best_model_path, grid_models.best_params_
@@ -811,5 +816,5 @@ class ModelTuner_:
         else:
             with open(model_file_path, 'wb') as f:
                 pickle.dump(model, f)
-        print(f"{model_name} model saved to {model_file_path}")
+        #print(f"{model_name} model saved to {model_file_path}")
         return model_file_path

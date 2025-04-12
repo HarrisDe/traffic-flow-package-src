@@ -11,7 +11,8 @@ import matplotlib.patheffects as PathEffects
 from .helper_utils import normalize_data
 import seaborn as sns
 sns.set_style('darkgrid')
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 class ModelEvaluator:
     """
@@ -697,8 +698,7 @@ class ModelEvaluator_:
         self.discard_zero_mape = discard_zero_mape
         self.epsilon = epsilon
         zero_percentage_values = self.calculate_discarded_percentage()
-        print(
-            f'Percentage of zero values in y_test: {zero_percentage_values:.2f}%')
+        #print(f'Percentage of zero values in y_test: {zero_percentage_values:.2f}%')
         if zero_percentage_values > 0:
             self.calculate_mape_with_handling_zero_values = True
 
@@ -756,7 +756,7 @@ class ModelEvaluator_:
             _, X_test_normalized = normalize_data(X_test=self.X_test)
             y_pred = model.predict(X_test_normalized).flatten()
         else:
-            print('Calculating predictions...')
+            #print('Calculating predictions...')
             y_pred = model.predict(self.X_test)
 
         if self.y_is_normalized:
@@ -766,8 +766,7 @@ class ModelEvaluator_:
                 f'Mean of y_pred de-NORMALIZED is: {round(np.mean(y_pred),2)} kph of delta speed')
         self.y_pred_before_reconstruction = y_pred.copy()
         y_pred = self.reconstruct_y(y_pred)
-        print(
-            f'Mean of y_pred AFTER RECONSTRUCTION is: {round(np.mean(y_pred),2)} kph of total speed')
+        #print(f'Mean of y_pred AFTER RECONSTRUCTION is: {round(np.mean(y_pred),2)} kph of total speed')
 
         return y_pred, self.y_pred_before_reconstruction
 
@@ -789,15 +788,15 @@ class ModelEvaluator_:
 
         # Model metrics
         mae = mean_absolute_error(self.y_test, y_pred)
-        print(f"mae from numpy for {model_path} is: {np.mean(abs_errors)}")
-        print(f'mae std from numpy is {np.std(abs_errors)}')
+        #print(f"mae from numpy for {model_path} is: {np.mean(abs_errors)}")
+        #print(f'mae std from numpy is {np.std(abs_errors)}')
         median_ae = median_absolute_error(self.y_test, y_pred)
         rmse = mean_squared_error(self.y_test, y_pred, squared=False)
         if not self.calculate_mape_with_handling_zero_values:  # self.calculate_mape_with_handling_zero_values
             mape = mean_absolute_percentage_error(self.y_test, y_pred)
-            print(f'mape from sklearn: {mape}')
+            #print(f'mape from sklearn: {mape}')
             mape_manual = np.mean(abs_errors / self.y_test)
-            print(f'mape_manual: {mape_manual}')
+            #print(f'mape_manual: {mape_manual}')
 
         # Standard deviation calculations
         mae_std = np.std(abs_errors)
@@ -818,7 +817,7 @@ class ModelEvaluator_:
         # not sure if this is correct (rmse std should be same as mae std)
         naive_rmse_std = np.std(naive_error**2)
         if not self.calculate_mape_with_handling_zero_values:
-            print('Calculating mape without handling zero values')
+            #print('Calculating mape without handling zero values')
             naive_mape = np.mean(naive_error / self.y_test)
             naive_mape_std = np.std(naive_error / self.y_test)
             naive_mape = np.mean(
@@ -827,7 +826,7 @@ class ModelEvaluator_:
                 naive_error/np.abs((naive_error + self.X_test['value'])))
 
         if self.calculate_mape_with_handling_zero_values:
-            print('Calculating mape with handling zero values')
+            #print('Calculating mape with handling zero values')
             mape, mape_std, naive_mape, naive_mape_std = self.calculate_mape_in_case_of_zero_values(
                 y_pred)
 
