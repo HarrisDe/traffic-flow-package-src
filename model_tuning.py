@@ -79,8 +79,6 @@ class ModelTuner:
         model.compile(optimizer=optimizer_instance, loss='mean_absolute_error')
         return model
 
-
-    
     # def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None):
     #     model_name = model_name or self.XGBoost_model_name
     #     objective = objective or 'reg:squarederror'
@@ -104,6 +102,7 @@ class ModelTuner:
     #             n_jobs=-1,
     #             random_state=self.random_state
     #         )
+
     def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None):
         model_name = model_name or self.XGBoost_model_name
         objective = objective or 'reg:squarederror'
@@ -297,9 +296,7 @@ class ModelTuner:
             with open(f'./models/{best_model_name_string}.pkl', 'wb') as f:
                 pickle.dump(model, f)
             print(f"{model_name} model saved to {best_model_name_string}.pkl")
-            
-            
-            
+
     # def tune_xgboost(self, model_name=None, params=None, use_gpu=True):
     #     """Perform grid search hyperparameter tuning for XGBoost."""
     #     if model_name is not None:
@@ -340,7 +337,7 @@ class ModelTuner:
 
     #     self._save_best_grid_model_and_get_errors(
     #         grid_models=xgb_grid, model_name=model_name)
-    
+
 
 ################################################################################################
 
@@ -604,8 +601,7 @@ class ModelTuner_:
         # print(f"Median Absolute Error: {median_ae:.2f} ± {median_ae_std:.2f}")
         # print(f"MAPE: {mape:.2f}% ± {mape_std:.2f}%")
 
-    
-    def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None,suppress_output=False,n_jobs=-1):
+    def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None, suppress_output=False, n_jobs=-1):
         model_name = model_name or self.XGBoost_model_name
         objective = objective or 'reg:squarederror'
         default_params = {'max_depth': [10, 8, 6, 4], 'learning_rate': [
@@ -614,6 +610,13 @@ class ModelTuner_:
         grid_params = params if params is not None else default_params
 
         if use_gpu:
+
+            if n_jobs != 1:
+                if not suppress_output:
+                    print(f"[WARNING] You passed n_jobs={n_jobs} with GPU training. "
+                          f"For optimal GPU performance, n_jobs is overridden to 1.")
+                n_jobs = 1
+
             # Instead of updating grid_params, set GPU parameters in the model instantiation:
             xgb_model = xgb.XGBRegressor(
                 objective=objective,
@@ -622,12 +625,12 @@ class ModelTuner_:
                 n_jobs=n_jobs,
                 random_state=self.random_state,
                 verbosity=0 if suppress_output else 1
-                
+
             )
         else:
             xgb_model = xgb.XGBRegressor(
                 objective=objective,
-                n_jobs=1,
+                n_jobs=n_jobs,
                 random_state=self.random_state,
                 verbosity=0 if suppress_output else 1
             )
@@ -642,8 +645,7 @@ class ModelTuner_:
         best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
             grid, model_name)
         return best_model_path, best_params_
-    
-    
+
     def tune_xgboost_fixed_split_with_gridsearch(self, model_name=None, params=None, use_gpu=True, objective=None, train_val_ratio=2/3):
         """Tunes XGBoost using a fixed train/validation split with GridSearchCV and PredefinedSplit."""
         from sklearn.model_selection import PredefinedSplit, GridSearchCV
@@ -684,7 +686,8 @@ class ModelTuner_:
         )
 
         # Step 3: Perform grid search
-        print(f'Using fixed split: {train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val')
+        print(
+            f'Using fixed split: {train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val')
         print(f'XGBoost objective: {objective}')
         grid = GridSearchCV(
             xgb_model,
@@ -699,6 +702,7 @@ class ModelTuner_:
         best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
             grid, model_name)
         return best_model_path, best_params_
+
     def tune_xgboost_fixed_split(self, model_name=None, params=None, use_gpu=True, objective=None, train_val_ratio=1/2):
         """Tunes XGBoost using a fixed train/validation split instead of CV."""
         model_name = model_name or self.XGBoost_model_name
@@ -727,7 +731,8 @@ class ModelTuner_:
         best_mae = float('inf')
         best_params_ = None
 
-        print(f"Using fixed train/val split ({train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val)")
+        print(
+            f"Using fixed train/val split ({train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val)")
 
         for combo in all_combos:
             param_dict = dict(zip(param_names, combo))
@@ -759,7 +764,8 @@ class ModelTuner_:
                 best_params_ = param_dict
 
         # Final test set evaluation
-        print(f"\nBest fixed-split model ({model_name}) performance on test set:")
+        print(
+            f"\nBest fixed-split model ({model_name}) performance on test set:")
         y_test_pred = best_model.predict(self.X_test)
         self._get_errors(self.y_test, y_test_pred)
 
@@ -767,7 +773,6 @@ class ModelTuner_:
         best_model_path = self.save_best_model(model_name, best_model)
         print(f"Best parameters for {model_name}: {best_params_}")
         return best_model_path, best_params_
-    
 
     def tune_random_forest(self, model_name=None, params=None):
         """Performs hyperparameter tuning for Random Forest using GridSearchCV."""
@@ -782,26 +787,23 @@ class ModelTuner_:
         best_model_path, grid_models.best_params_ = self._save_best_grid_model_and_get_errors(
             grid, model_name)
         return best_model_path, grid_models.best_params_
-    
-    
-    
 
     def _save_best_grid_model_and_get_errors(self, grid_models, model_name):
         """Saves the best model and returns its file path, while printing evaluation errors."""
         best_model = grid_models.best_estimator_
         y_pred = best_model.predict(self.X_test)
-        #print(f"Evaluation results for {model_name}:")
+        # print(f"Evaluation results for {model_name}:")
         self._get_errors(self.y_test, y_pred)
 
         # Compute naive baseline errors
         naive_predictions = np.abs(
             self.X_test['value'] - (self.y_test + self.X_test['value']))
-        #print("Naive model evaluation:")
+        # print("Naive model evaluation:")
         self._get_errors(self.y_test, naive_predictions)
 
         # Print best parameters explicitly
         best_params_ = grid_models.best_params_
-        #print(f"\nBest parameters for {model_name}: {best_params_}")
+        # print(f"\nBest parameters for {model_name}: {best_params_}")
 
         best_model_path = self.save_best_model(model_name, best_model)
         return best_model_path, grid_models.best_params_
@@ -816,5 +818,5 @@ class ModelTuner_:
         else:
             with open(model_file_path, 'wb') as f:
                 pickle.dump(model, f)
-        #print(f"{model_name} model saved to {model_file_path}")
+        # print(f"{model_name} model saved to {model_file_path}")
         return model_file_path
