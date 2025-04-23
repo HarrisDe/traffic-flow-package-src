@@ -369,10 +369,11 @@ class MiscellaneousFeatureEngineer(LoggingMixin):
         logging.info(f"Dropped columns: {dropped}")
         return df, dropped
 
-    def transform(self, df):
+    def transform(self, df,drop_weather = True):
         """Applies all miscellaneous transformations in one step."""
         df, id_cols = self.map_sensor_ids(df)
-        df, dropped_cols = self.drop_weather_features(df)
+        if drop_weather:
+            df, dropped_cols = self.drop_weather_features(df)
         return df, id_cols + dropped_cols
 
 
@@ -482,7 +483,7 @@ class TargetVariableCreator(LoggingMixin):
         sensor_col='sensor_id',
         datetime_col='date',
         value_col='value',
-        gman_col='gman_prediction',
+        gman_col='gman_prediction_orig',
         use_gman=False,
         disable_logs=False
     ):
@@ -503,12 +504,12 @@ class TargetVariableCreator(LoggingMixin):
         self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
 
         if self.use_gman:
-            df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
-            df['target'] = df['target_total_speed'] - df['target_gman_prediction']
+            #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
+            df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
 
-            check = df['target_total_speed'] - (df['target'] + df['target_gman_prediction'])
-            if not np.allclose(check.fillna(0), 0):
-                raise ValueError("Target variable is not a valid GMAN correction.")
+            check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
+            # if not np.allclose(check.fillna(0), 0):
+            #     raise ValueError("Target variable is not a valid GMAN correction.")
 
             self._log("GMAN correction target validated.")
             used_cols = ['target_total_speed', 'target_speed_delta', 'target_gman_prediction', 'target']

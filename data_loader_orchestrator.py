@@ -28,7 +28,8 @@ class InitialTrafficDataLoader(LoggingMixin):
         datetime_cols=['datetime', 'date'],
         sensor_col='sensor_id',
         value_col='value',
-        disable_logs=False
+        disable_logs=False,
+        df_gman=None
     ):
         super().__init__(disable_logs=disable_logs)
         self.file_path = file_path
@@ -38,7 +39,7 @@ class InitialTrafficDataLoader(LoggingMixin):
         self.datetime_col = None
         self.sensor_col = sensor_col
         self.value_col = value_col
-        self.df_gman = None
+        self.df_gman = df_gman
         self.first_test_timestamp = None
         self.df_as_gman_input = None
         self.df_as_gman_input_orig = None
@@ -152,37 +153,109 @@ class InitialTrafficDataLoader(LoggingMixin):
         self._log(
             f"Applied smoothing (window={window_size}, train_only={filter_on_train_only}, use_median_instead_of_mean={use_median_instead_of_mean}).")
 
-    def add_gman_predictions(self):
+    def add_gman_predictions_deprecated(self, model_prediction_col='gman_prediction', model_prediction_date_col='gman_prediction_date'):
         self._log("Merging gman data.")
         assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
         self.df[self.sensor_col] = self.df[self.sensor_col].astype('category')
         self.df_gman[self.sensor_col] = self.df_gman[self.sensor_col].astype(
             'category')
+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
+            self.df_gman[model_prediction_date_col])
+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
+        # Limit df_gman to the datetime range of df
+        min_date = self.df[self.datetime_col].min()
+        max_date = self.df[self.datetime_col].max()
+        self.df_gman = self.df_gman[
+            (self.df_gman[model_prediction_date_col] >= min_date) &
+            (self.df_gman[model_prediction_date_col] <= max_date)
+        ]
         self.df = self.df.set_index([self.datetime_col, self.sensor_col])
         self.df_gman = self.df_gman.set_index(
-            [self.datetime_col, self.sensor_col])
+            [model_prediction_date_col, self.sensor_col])
         self.df = self.df.join(self.df_gman, how='left').reset_index()
-        missing_rows = self.df[self.df['gman_prediction'].isna()]
+        missing_rows = self.df[self.df[model_prediction_col].isna()]
         if not missing_rows.empty:
             dropped_count = missing_rows.shape[0]
             min_date = missing_rows[self.datetime_col].min()
             max_date = missing_rows[self.datetime_col].max()
             self._log(
                 f"Dropping {dropped_count} rows with missing 'gman_prediction'. Date range: {min_date} to {max_date}.")
-            self.df = self.df.dropna(subset=['gman_prediction'])
+            self.df = self.df.dropna(subset=[model_prediction_col])
         else:
             self._log("No rows dropped for missing 'gman_predictions'.")
 
+    def add_gman_predictions(self,
+                             convert_prediction_to_delta_speed=True,
+                             model_prediction_col='gman_prediction',
+                             model_prediction_date_col='gman_prediction_date',
+                             keep_target_date=True):
+        self._log("Merging gman data.")
+        assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
+
+        # Ensure datetime columns are datetime
+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
+            self.df_gman[model_prediction_date_col])
+
+        # Restrict df_gman to the date range in df
+        min_date = self.df[self.datetime_col].min()
+        max_date = self.df[self.datetime_col].max()
+        self.df_gman = self.df_gman[
+            (self.df_gman[model_prediction_date_col] >= min_date) &
+            (self.df_gman[model_prediction_date_col] <= max_date)
+        ]
+
+        # Columns to keep: sensor_id, prediction_date, gman_prediction (+ optionally target_date)
+        merge_cols = [self.sensor_col,
+                      model_prediction_date_col, model_prediction_col]
+        if keep_target_date and 'gman_target_date' in self.df_gman.columns:
+            merge_cols.append('gman_target_date')
+
+        df_gman_trimmed = self.df_gman[merge_cols].copy()
+
+        # Merge using prediction_date + sensor_id as keys
+        self.df = pd.merge(
+            self.df,
+            df_gman_trimmed,
+            how='left',
+            left_on=[self.datetime_col, self.sensor_col],
+            right_on=[model_prediction_date_col, self.sensor_col]
+        )
+
+        # Optionally drop the join key (prediction_date)
+        if not keep_target_date:
+            self.df.drop(columns=[model_prediction_date_col], inplace=True)
+
+        # Log dropped rows (missing predictions)
+        missing_rows = self.df[self.df[model_prediction_col].isna()]
+        if not missing_rows.empty:
+            dropped_count = missing_rows.shape[0]
+            min_date = missing_rows[self.datetime_col].min()
+            max_date = missing_rows[self.datetime_col].max()
+            self._log(f"Dropping {dropped_count} rows with missing '{model_prediction_col}'. "
+                      f"Date range: {min_date} to {max_date}.")
+            self.df = self.df.dropna(subset=[model_prediction_col])
+        else:
+            self._log("No rows dropped for missing gman predictions.")
+
+        if convert_prediction_to_delta_speed:
+            model_prediction_col_orig = model_prediction_col + '_orig'
+            self.df[model_prediction_col_orig] = self.df[model_prediction_col]
+            self.df[model_prediction_col] = self.df[model_prediction_col] - \
+                self.df[self.value_col]
+
     def get_data(self,
                  window_size=3,
-                 filter_on_train_only=True,
+                 filter_on_train_only=False,
                  filter_extreme_changes=True,
                  smooth_speeds=True,
-                 use_median_instead_of_mean=True,
+                 use_median_instead_of_mean=False,
                  relative_threshold=0.7,
                  test_size=1/3,
                  diagnose_extreme_changes=False,
-                 add_gman_predictions=False):
+                 add_gman_predictions=False,
+                 convert_gman_prediction_to_delta_speed=True,
+                 ):
         self.load_data_parquet()
         self.align_sensors_to_common_timeframe()
         self.add_test_set_column(test_size=test_size)
@@ -195,7 +268,8 @@ class InitialTrafficDataLoader(LoggingMixin):
             self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only,
                                use_median_instead_of_mean=use_median_instead_of_mean)
         if add_gman_predictions:
-            self.add_gman_predictions()
+            self.add_gman_predictions(
+                convert_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed)
         self.df[self.value_col] = self.df[self.value_col].astype(np.float32)
         return self.df.copy()
 
