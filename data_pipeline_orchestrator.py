@@ -64,7 +64,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         use_gman_target=False,
         convert_gman_prediction_to_delta_speed=True,
         window_size=3,
-        spatial_adj=5,
+        spatial_adj=1,
+        adj_are_relative = False,
         normalize_by_distance=True,
         lag_steps=20,
         relative_lags=True,
@@ -123,6 +124,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             sensor_dict_path=self.sensor_dict_path,
             spatial_adj=spatial_adj,
             normalize_by_distance=normalize_by_distance,
+            adj_are_relative= adj_are_relative,
             datetime_col=self.datetime_col,
             value_col=self.value_col,
             sensor_col=self.sensor_col,
@@ -142,6 +144,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             disable_logs=self.disable_logs,
             sensor_col=self.sensor_col,
             value_col=self.value_col,
+          
         )
         df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
         self.feature_log['lag_features'] = lag_cols

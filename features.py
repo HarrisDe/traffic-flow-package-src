@@ -117,6 +117,7 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
                  datetime_col='datetime',
                  value_col='value',
                  sensor_col='sensor_id',
+                 adj_are_relative = False,
                  fill_nans_value=-1,
                  disable_logs=False):
         super().__init__(disable_logs)
@@ -129,6 +130,7 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
         self.datetime_col = datetime_col
         self.value_col = value_col
         self.sensor_col = sensor_col
+        self.adj_are_relative = adj_are_relative
         self.new_columns = []
 
     def transform(self, df, current_smoothing=None, prev_smoothing=None):
@@ -182,6 +184,11 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
 
             df[down_col] = down_values
             df[up_col] = up_values
+            
+            if self.adj_are_relative:
+                df[down_col] =(df[down_col] - df[self.value_col]) / (df[self.value_col] + self.epsilon)
+                df[up_col] = (df[self.value_col] - df[up_col]) / (df[up_col] + self.epsilon)
+                 
 
             # Normalize
             if self.normalize_by_distance:
@@ -300,7 +307,7 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
 
 class TemporalLagFeatureAdder(LoggingMixin):
     def __init__(self, lags=3, relative=False, fill_nans_value=-1, disable_logs=False,
-                 sensor_col='sensor_id', value_col='value', datetime_col='datetime'):
+                 sensor_col='sensor_id', value_col='value', datetime_col='datetime',epsilon = 1e-5):
         super().__init__(disable_logs)
         self.lags = lags
         self.relative = relative
@@ -309,9 +316,9 @@ class TemporalLagFeatureAdder(LoggingMixin):
         self.value_col = value_col
         self.datetime_col = datetime_col
         self.new_columns = []
+        self.epsilon = epsilon
 
     def transform(self, df, current_smoothing=None, prev_smoothing=None):
-        epsilon = 1e-5
         self._log(f"Adding {'relative' if self.relative else 'absolute'} lags (lags={self.lags})")
         col_name_start = f"{'relative_diff_lag' if self.relative else 'lag'}"
         existing_cols = [col for col in df.columns if col.startswith(col_name_start)]
@@ -330,7 +337,7 @@ class TemporalLagFeatureAdder(LoggingMixin):
             shifted = df.groupby(self.sensor_col)[self.value_col].shift(i)
 
             if self.relative:
-                df[col_name] = (df[self.value_col] - shifted) / (shifted + epsilon)
+                df[col_name] = (df[self.value_col] - shifted) / (shifted + self.epsilon)
             else:
                 df[col_name] = shifted - df[self.value_col]
 
@@ -507,7 +514,7 @@ class TargetVariableCreator(LoggingMixin):
             #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
             df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
 
-            check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
+            #check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
             # if not np.allclose(check.fillna(0), 0):
             #     raise ValueError("Target variable is not a valid GMAN correction.")
 

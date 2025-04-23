@@ -13,7 +13,281 @@ import warnings
 import numpy as np
 
 
+
+
+
 class ModelTuner:
+    """
+    A class for performing hyperparameter tuning for different regression models (XGBoost, Random Forest, Neural Network)
+    using either TimeSeriesSplit or standard K-Fold cross-validation.
+    """
+
+    def __init__(self, X_train, X_test, y_train, y_test, random_state=69, use_ts_split=True, n_splits=3,
+                 use_min_max_norm=False, best_model_name_string_start='best_model_', model_path=None,
+                 XGBoost_model_name=None, Random_Forest_model_name=None, ann_model_name=None):
+        """
+        Initializes ModelTuner with training and test data splits.
+        """
+        self.X_train = X_train
+        self.X_test = X_test
+        self.y_train = y_train
+        self.y_test = y_test
+        self.best_models = {}
+        self.random_state = random_state
+        self.use_ts_split = use_ts_split
+        self.n_splits = n_splits
+        self.use_min_max_norm = use_min_max_norm
+        self.scaler = None  # Will be initialized when tuning ANN
+        self.best_model_name_string_start = best_model_name_string_start
+        self.model_path = model_path if model_path else './models'
+        os.makedirs(self.model_path, exist_ok=True)
+        self.XGBoost_model_name = XGBoost_model_name if XGBoost_model_name else 'XGBoost'
+        self.Random_Forest_model_name = Random_Forest_model_name if Random_Forest_model_name else 'Random_Forest'
+        self.ann_model_name = ann_model_name if ann_model_name else 'Neural_Network'
+        self.X_train_normalized, self.X_test_normalized = normalize_data(
+            self.X_train, self.X_test, use_minmax_norm=self.use_min_max_norm)
+
+    def get_cv_splitter(self):
+        """Returns the appropriate cross-validation splitter."""
+        return TimeSeriesSplit(n_splits=self.n_splits) if self.use_ts_split else KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
+
+    def _get_errors(self, y_true, y_pred):
+        """Calculates and prints different error metrics."""
+        absolute_errors = np.abs(y_true - y_pred)
+        mae = np.mean(absolute_errors)
+        mae_std = np.std(absolute_errors)
+        median_ae = np.median(absolute_errors)
+        median_ae_std = np.std(absolute_errors)
+        rmse = np.sqrt(np.mean(absolute_errors**2))
+        safe_mape = np.where(y_true == 0, np.nan,
+                             absolute_errors / y_true) * 100
+        mape = np.nanmean(safe_mape)
+        mape_std = np.nanstd(safe_mape)
+        # print(f"MAE: {mae:.2f} ± {mae_std:.2f}")
+        # print(f"Median Absolute Error: {median_ae:.2f} ± {median_ae_std:.2f}")
+        # print(f"MAPE: {mape:.2f}% ± {mape_std:.2f}%")
+
+    def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None, suppress_output=False, n_jobs=-1):
+        model_name = model_name or self.XGBoost_model_name
+        objective = objective or 'reg:squarederror'
+        default_params = {'max_depth': [10, 8, 6, 4], 'learning_rate': [
+            0.1, 0.01], 'n_estimators': [1000, 750, 500, 250]}
+        # Use provided params if available, else use default
+        grid_params = params if params is not None else default_params
+
+        if use_gpu:
+
+            if n_jobs != 1:
+                if not suppress_output:
+                    print(f"[WARNING] You passed n_jobs={n_jobs} with GPU training. "
+                          f"For optimal GPU performance, n_jobs is overridden to 1.")
+                n_jobs = 1
+
+            # Instead of updating grid_params, set GPU parameters in the model instantiation:
+            xgb_model = xgb.XGBRegressor(
+                objective=objective,
+                tree_method='gpu_hist',
+                predictor='gpu_predictor',
+                n_jobs=n_jobs,
+                random_state=self.random_state,
+                verbosity=0 if suppress_output else 1
+
+            )
+        else:
+            xgb_model = xgb.XGBRegressor(
+                objective=objective,
+                n_jobs=n_jobs,
+                random_state=self.random_state,
+                verbosity=0 if suppress_output else 1
+            )
+
+        cv_splitter = self.get_cv_splitter()
+        if not suppress_output:
+
+            print(f'XGBoost objective: {objective}')
+        grid = GridSearchCV(
+            xgb_model, grid_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=0 if suppress_output else 3)
+        grid.fit(self.X_train, self.y_train)
+        best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
+            grid, model_name)
+        return best_model_path, best_params_
+
+    def tune_xgboost_fixed_split_with_gridsearch(self, model_name=None, params=None, use_gpu=True, objective=None, train_val_ratio=2/3):
+        """Tunes XGBoost using a fixed train/validation split with GridSearchCV and PredefinedSplit."""
+        from sklearn.model_selection import PredefinedSplit, GridSearchCV
+        from sklearn.utils import indexable
+        import numpy as np
+
+        model_name = model_name or self.XGBoost_model_name
+        objective = objective or 'reg:squarederror'
+
+        default_params = {
+            'max_depth': [10, 8, 6, 4],
+            'learning_rate': [0.1, 0.01],
+            'n_estimators': [1000, 750, 500, 250]
+        }
+        grid_params = params if params is not None else default_params
+
+        # Step 1: Create fixed train/val split using PredefinedSplit
+        n_samples = len(self.X_train)
+        n_train = int(n_samples * train_val_ratio)
+
+        # test_fold: -1 for training samples, 0 for validation samples
+        test_fold = np.concatenate([
+            np.full(n_train, -1),
+            np.zeros(n_samples - n_train)
+        ])
+        ps = PredefinedSplit(test_fold)
+
+        # Make sure X and y are indexable in the same way
+        X_all, y_all = indexable(self.X_train, self.y_train)
+
+        # Step 2: Define the model
+        xgb_model = xgb.XGBRegressor(
+            objective=objective,
+            tree_method='gpu_hist' if use_gpu else 'auto',
+            predictor='gpu_predictor' if use_gpu else 'auto',
+            n_jobs=-1,
+            random_state=self.random_state
+        )
+
+        # Step 3: Perform grid search
+        print(
+            f'Using fixed split: {train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val')
+        print(f'XGBoost objective: {objective}')
+        grid = GridSearchCV(
+            xgb_model,
+            param_grid=grid_params,
+            scoring='neg_mean_absolute_error',
+            cv=ps,
+            verbose=3
+        )
+        grid.fit(X_all, y_all)
+
+        # Step 4: Save best model and report metrics
+        best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
+            grid, model_name)
+        return best_model_path, best_params_
+
+    def tune_xgboost_fixed_split(self, model_name=None, params=None, use_gpu=True, objective=None, train_val_ratio=1/2):
+        """Tunes XGBoost using a fixed train/validation split instead of CV."""
+        model_name = model_name or self.XGBoost_model_name
+        objective = objective or 'reg:squarederror'
+
+        default_params = {
+            'max_depth': [10, 8, 6, 4],
+            'learning_rate': [0.1, 0.01],
+            'n_estimators': [1000, 750, 500, 250]
+        }
+        grid_params = params if params is not None else default_params
+
+        # 1. Manual train/val split
+        num_train_samples = int(len(self.X_train) * train_val_ratio)
+        X_train_sub = self.X_train[:num_train_samples]
+        y_train_sub = self.y_train[:num_train_samples]
+        X_val_sub = self.X_train[num_train_samples:]
+        y_val_sub = self.y_train[num_train_samples:]
+
+        # 2. Create all hyperparam combinations
+        from itertools import product
+        all_combos = list(product(*grid_params.values()))
+        param_names = list(grid_params.keys())
+
+        best_model = None
+        best_mae = float('inf')
+        best_params_ = None
+
+        print(
+            f"Using fixed train/val split ({train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val)")
+
+        for combo in all_combos:
+            param_dict = dict(zip(param_names, combo))
+            if use_gpu:
+                model = xgb.XGBRegressor(
+                    **param_dict,
+                    objective=objective,
+                    tree_method='gpu_hist',
+                    predictor='gpu_predictor',
+                    n_jobs=-1,
+                    random_state=self.random_state
+                )
+            else:
+                model = xgb.XGBRegressor(
+                    **param_dict,
+                    objective=objective,
+                    n_jobs=-1,
+                    random_state=self.random_state
+                )
+
+            model.fit(X_train_sub, y_train_sub)
+            y_pred = model.predict(X_val_sub)
+            mae = np.mean(np.abs(y_val_sub - y_pred))
+            print(f"Params: {param_dict}, Val MAE: {mae:.4f}")
+
+            if mae < best_mae:
+                best_mae = mae
+                best_model = model
+                best_params_ = param_dict
+
+        # Final test set evaluation
+        print(
+            f"\nBest fixed-split model ({model_name}) performance on test set:")
+        y_test_pred = best_model.predict(self.X_test)
+        self._get_errors(self.y_test, y_test_pred)
+
+        # Save the model
+        best_model_path = self.save_best_model(model_name, best_model)
+        print(f"Best parameters for {model_name}: {best_params_}")
+        return best_model_path, best_params_
+
+    def tune_random_forest(self, model_name=None, params=None):
+        """Performs hyperparameter tuning for Random Forest using GridSearchCV."""
+        model_name = model_name or self.Random_Forest_model_name
+        default_params = {'n_estimators': [100, 200], 'max_depth': [
+            10, 20, None], 'min_samples_split': [2, 5]}
+        rf_model = RandomForestRegressor(
+            random_state=self.random_state, n_jobs=-1)
+        grid = GridSearchCV(rf_model, params or default_params,
+                            scoring='neg_mean_absolute_error', cv=self.get_cv_splitter(), verbose=3)
+        grid.fit(self.X_train, self.y_train)
+        best_model_path, grid_models.best_params_ = self._save_best_grid_model_and_get_errors(
+            grid, model_name)
+        return best_model_path, grid_models.best_params_
+
+    def _save_best_grid_model_and_get_errors(self, grid_models, model_name):
+        """Saves the best model and returns its file path, while printing evaluation errors."""
+        best_model = grid_models.best_estimator_
+        y_pred = best_model.predict(self.X_test)
+        # print(f"Evaluation results for {model_name}:")
+        self._get_errors(self.y_test, y_pred)
+
+        # Compute naive baseline errors
+        naive_predictions = np.abs(
+            self.X_test['value'] - (self.y_test + self.X_test['value']))
+        # print("Naive model evaluation:")
+        self._get_errors(self.y_test, naive_predictions)
+
+        # Print best parameters explicitly
+        best_params_ = grid_models.best_params_
+        # print(f"\nBest parameters for {model_name}: {best_params_}")
+
+        best_model_path = self.save_best_model(model_name, best_model)
+        return best_model_path, grid_models.best_params_
+
+    def save_best_model(self, model_name, model):
+        """Saves the best model to the specified directory and returns the file path."""
+        best_model_name_string = f"{self.best_model_name_string_start}{model_name}"
+        model_file_path = os.path.join(
+            self.model_path, f"{best_model_name_string}.{'h5' if model_name == self.ann_model_name else 'pkl'}")
+        if model_name == self.ann_model_name:
+            model.model.save(model_file_path)
+        else:
+            with open(model_file_path, 'wb') as f:
+                pickle.dump(model, f)
+        # print(f"{model_name} model saved to {model_file_path}")
+        return model_file_path
+
+class ModelTuner_deprecated:
     """
     A class to perform hyperparameter tuning for different regression models (XGBoost, Random Forest, Neural Network)
     using either TimeSeriesSplit or standard K-Fold cross-validation.
@@ -550,273 +824,3 @@ class ModelTuner:
 #         return model_file_path
 
 
-class ModelTuner_:
-    """
-    A class for performing hyperparameter tuning for different regression models (XGBoost, Random Forest, Neural Network)
-    using either TimeSeriesSplit or standard K-Fold cross-validation.
-    """
-
-    def __init__(self, X_train, X_test, y_train, y_test, random_state=69, use_ts_split=True, n_splits=3,
-                 use_min_max_norm=False, best_model_name_string_start='best_model_', model_path=None,
-                 XGBoost_model_name=None, Random_Forest_model_name=None, ann_model_name=None):
-        """
-        Initializes ModelTuner with training and test data splits.
-        """
-        self.X_train = X_train
-        self.X_test = X_test
-        self.y_train = y_train
-        self.y_test = y_test
-        self.best_models = {}
-        self.random_state = random_state
-        self.use_ts_split = use_ts_split
-        self.n_splits = n_splits
-        self.use_min_max_norm = use_min_max_norm
-        self.scaler = None  # Will be initialized when tuning ANN
-        self.best_model_name_string_start = best_model_name_string_start
-        self.model_path = model_path if model_path else './models'
-        os.makedirs(self.model_path, exist_ok=True)
-        self.XGBoost_model_name = XGBoost_model_name if XGBoost_model_name else 'XGBoost'
-        self.Random_Forest_model_name = Random_Forest_model_name if Random_Forest_model_name else 'Random_Forest'
-        self.ann_model_name = ann_model_name if ann_model_name else 'Neural_Network'
-        self.X_train_normalized, self.X_test_normalized = normalize_data(
-            self.X_train, self.X_test, use_minmax_norm=self.use_min_max_norm)
-
-    def get_cv_splitter(self):
-        """Returns the appropriate cross-validation splitter."""
-        return TimeSeriesSplit(n_splits=self.n_splits) if self.use_ts_split else KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
-
-    def _get_errors(self, y_true, y_pred):
-        """Calculates and prints different error metrics."""
-        absolute_errors = np.abs(y_true - y_pred)
-        mae = np.mean(absolute_errors)
-        mae_std = np.std(absolute_errors)
-        median_ae = np.median(absolute_errors)
-        median_ae_std = np.std(absolute_errors)
-        rmse = np.sqrt(np.mean(absolute_errors**2))
-        safe_mape = np.where(y_true == 0, np.nan,
-                             absolute_errors / y_true) * 100
-        mape = np.nanmean(safe_mape)
-        mape_std = np.nanstd(safe_mape)
-        # print(f"MAE: {mae:.2f} ± {mae_std:.2f}")
-        # print(f"Median Absolute Error: {median_ae:.2f} ± {median_ae_std:.2f}")
-        # print(f"MAPE: {mape:.2f}% ± {mape_std:.2f}%")
-
-    def tune_xgboost(self, model_name=None, params=None, use_gpu=True, objective=None, suppress_output=False, n_jobs=-1):
-        model_name = model_name or self.XGBoost_model_name
-        objective = objective or 'reg:squarederror'
-        default_params = {'max_depth': [10, 8, 6, 4], 'learning_rate': [
-            0.1, 0.01], 'n_estimators': [1000, 750, 500, 250]}
-        # Use provided params if available, else use default
-        grid_params = params if params is not None else default_params
-
-        if use_gpu:
-
-            if n_jobs != 1:
-                if not suppress_output:
-                    print(f"[WARNING] You passed n_jobs={n_jobs} with GPU training. "
-                          f"For optimal GPU performance, n_jobs is overridden to 1.")
-                n_jobs = 1
-
-            # Instead of updating grid_params, set GPU parameters in the model instantiation:
-            xgb_model = xgb.XGBRegressor(
-                objective=objective,
-                tree_method='gpu_hist',
-                predictor='gpu_predictor',
-                n_jobs=n_jobs,
-                random_state=self.random_state,
-                verbosity=0 if suppress_output else 1
-
-            )
-        else:
-            xgb_model = xgb.XGBRegressor(
-                objective=objective,
-                n_jobs=n_jobs,
-                random_state=self.random_state,
-                verbosity=0 if suppress_output else 1
-            )
-
-        cv_splitter = self.get_cv_splitter()
-        if not suppress_output:
-
-            print(f'XGBoost objective: {objective}')
-        grid = GridSearchCV(
-            xgb_model, grid_params, scoring='neg_mean_absolute_error', cv=cv_splitter, verbose=0 if suppress_output else 3)
-        grid.fit(self.X_train, self.y_train)
-        best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
-            grid, model_name)
-        return best_model_path, best_params_
-
-    def tune_xgboost_fixed_split_with_gridsearch(self, model_name=None, params=None, use_gpu=True, objective=None, train_val_ratio=2/3):
-        """Tunes XGBoost using a fixed train/validation split with GridSearchCV and PredefinedSplit."""
-        from sklearn.model_selection import PredefinedSplit, GridSearchCV
-        from sklearn.utils import indexable
-        import numpy as np
-
-        model_name = model_name or self.XGBoost_model_name
-        objective = objective or 'reg:squarederror'
-
-        default_params = {
-            'max_depth': [10, 8, 6, 4],
-            'learning_rate': [0.1, 0.01],
-            'n_estimators': [1000, 750, 500, 250]
-        }
-        grid_params = params if params is not None else default_params
-
-        # Step 1: Create fixed train/val split using PredefinedSplit
-        n_samples = len(self.X_train)
-        n_train = int(n_samples * train_val_ratio)
-
-        # test_fold: -1 for training samples, 0 for validation samples
-        test_fold = np.concatenate([
-            np.full(n_train, -1),
-            np.zeros(n_samples - n_train)
-        ])
-        ps = PredefinedSplit(test_fold)
-
-        # Make sure X and y are indexable in the same way
-        X_all, y_all = indexable(self.X_train, self.y_train)
-
-        # Step 2: Define the model
-        xgb_model = xgb.XGBRegressor(
-            objective=objective,
-            tree_method='gpu_hist' if use_gpu else 'auto',
-            predictor='gpu_predictor' if use_gpu else 'auto',
-            n_jobs=-1,
-            random_state=self.random_state
-        )
-
-        # Step 3: Perform grid search
-        print(
-            f'Using fixed split: {train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val')
-        print(f'XGBoost objective: {objective}')
-        grid = GridSearchCV(
-            xgb_model,
-            param_grid=grid_params,
-            scoring='neg_mean_absolute_error',
-            cv=ps,
-            verbose=3
-        )
-        grid.fit(X_all, y_all)
-
-        # Step 4: Save best model and report metrics
-        best_model_path, best_params_ = self._save_best_grid_model_and_get_errors(
-            grid, model_name)
-        return best_model_path, best_params_
-
-    def tune_xgboost_fixed_split(self, model_name=None, params=None, use_gpu=True, objective=None, train_val_ratio=1/2):
-        """Tunes XGBoost using a fixed train/validation split instead of CV."""
-        model_name = model_name or self.XGBoost_model_name
-        objective = objective or 'reg:squarederror'
-
-        default_params = {
-            'max_depth': [10, 8, 6, 4],
-            'learning_rate': [0.1, 0.01],
-            'n_estimators': [1000, 750, 500, 250]
-        }
-        grid_params = params if params is not None else default_params
-
-        # 1. Manual train/val split
-        num_train_samples = int(len(self.X_train) * train_val_ratio)
-        X_train_sub = self.X_train[:num_train_samples]
-        y_train_sub = self.y_train[:num_train_samples]
-        X_val_sub = self.X_train[num_train_samples:]
-        y_val_sub = self.y_train[num_train_samples:]
-
-        # 2. Create all hyperparam combinations
-        from itertools import product
-        all_combos = list(product(*grid_params.values()))
-        param_names = list(grid_params.keys())
-
-        best_model = None
-        best_mae = float('inf')
-        best_params_ = None
-
-        print(
-            f"Using fixed train/val split ({train_val_ratio:.2f} train / {1-train_val_ratio:.2f} val)")
-
-        for combo in all_combos:
-            param_dict = dict(zip(param_names, combo))
-            if use_gpu:
-                model = xgb.XGBRegressor(
-                    **param_dict,
-                    objective=objective,
-                    tree_method='gpu_hist',
-                    predictor='gpu_predictor',
-                    n_jobs=-1,
-                    random_state=self.random_state
-                )
-            else:
-                model = xgb.XGBRegressor(
-                    **param_dict,
-                    objective=objective,
-                    n_jobs=-1,
-                    random_state=self.random_state
-                )
-
-            model.fit(X_train_sub, y_train_sub)
-            y_pred = model.predict(X_val_sub)
-            mae = np.mean(np.abs(y_val_sub - y_pred))
-            print(f"Params: {param_dict}, Val MAE: {mae:.4f}")
-
-            if mae < best_mae:
-                best_mae = mae
-                best_model = model
-                best_params_ = param_dict
-
-        # Final test set evaluation
-        print(
-            f"\nBest fixed-split model ({model_name}) performance on test set:")
-        y_test_pred = best_model.predict(self.X_test)
-        self._get_errors(self.y_test, y_test_pred)
-
-        # Save the model
-        best_model_path = self.save_best_model(model_name, best_model)
-        print(f"Best parameters for {model_name}: {best_params_}")
-        return best_model_path, best_params_
-
-    def tune_random_forest(self, model_name=None, params=None):
-        """Performs hyperparameter tuning for Random Forest using GridSearchCV."""
-        model_name = model_name or self.Random_Forest_model_name
-        default_params = {'n_estimators': [100, 200], 'max_depth': [
-            10, 20, None], 'min_samples_split': [2, 5]}
-        rf_model = RandomForestRegressor(
-            random_state=self.random_state, n_jobs=-1)
-        grid = GridSearchCV(rf_model, params or default_params,
-                            scoring='neg_mean_absolute_error', cv=self.get_cv_splitter(), verbose=3)
-        grid.fit(self.X_train, self.y_train)
-        best_model_path, grid_models.best_params_ = self._save_best_grid_model_and_get_errors(
-            grid, model_name)
-        return best_model_path, grid_models.best_params_
-
-    def _save_best_grid_model_and_get_errors(self, grid_models, model_name):
-        """Saves the best model and returns its file path, while printing evaluation errors."""
-        best_model = grid_models.best_estimator_
-        y_pred = best_model.predict(self.X_test)
-        # print(f"Evaluation results for {model_name}:")
-        self._get_errors(self.y_test, y_pred)
-
-        # Compute naive baseline errors
-        naive_predictions = np.abs(
-            self.X_test['value'] - (self.y_test + self.X_test['value']))
-        # print("Naive model evaluation:")
-        self._get_errors(self.y_test, naive_predictions)
-
-        # Print best parameters explicitly
-        best_params_ = grid_models.best_params_
-        # print(f"\nBest parameters for {model_name}: {best_params_}")
-
-        best_model_path = self.save_best_model(model_name, best_model)
-        return best_model_path, grid_models.best_params_
-
-    def save_best_model(self, model_name, model):
-        """Saves the best model to the specified directory and returns the file path."""
-        best_model_name_string = f"{self.best_model_name_string_start}{model_name}"
-        model_file_path = os.path.join(
-            self.model_path, f"{best_model_name_string}.{'h5' if model_name == self.ann_model_name else 'pkl'}")
-        if model_name == self.ann_model_name:
-            model.model.save(model_file_path)
-        else:
-            with open(model_file_path, 'wb') as f:
-                pickle.dump(model, f)
-        # print(f"{model_name} model saved to {model_file_path}")
-        return model_file_path
