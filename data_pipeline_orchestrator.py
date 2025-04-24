@@ -164,7 +164,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         
         
         if add_previous_weekday_feature:
-            prevday = PreviousWeekdayValueFeatureEngineer(
+            prevday = PreviousWeekdayValueFeatureEngineerOptimal(
                 datetime_col=self.datetime_col,
                 sensor_col=self.sensor_col,
                 value_col=self.value_col,
