@@ -13,6 +13,7 @@ from .helper_utils import *
 import pickle
 import time
 import json
+from typing import List, Tuple
 import re 
 # Configure logging
 logging.basicConfig(
@@ -479,6 +480,141 @@ class CongestionFeatureEngineer(LoggingMixin):
         df, c_cols = self.transform_congestion(df)
         df, o_cols = self.add_outlier_flags(df)
         return df, c_cols + o_cols
+    
+    
+class PreviousWeekdayValueFeatureEngineer:
+    def __init__(self, datetime_col='date', sensor_col='sensor_id', value_col='value', horizon_minutes=15, strict_weekday_match=True):
+        self.datetime_col = datetime_col
+        self.sensor_col = sensor_col
+        self.value_col = value_col
+        self.horizon_minutes = horizon_minutes
+        self.strict_weekday_match = strict_weekday_match
+        self.new_column_name = f'prev_weekday_value_h{self.horizon_minutes}'
+
+    def transform(self, df):
+        df = df.copy()
+        df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
+
+        # Create pivot for fast lookup
+        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+        stacked = pivot.stack()
+        stacked.index.names = [self.datetime_col, self.sensor_col]
+
+        # Get original day of week
+        df['current_dayofweek'] = df[self.datetime_col].dt.dayofweek
+
+        # Compute previous valid weekday date + horizon
+        def get_valid_timestamp(ts):
+            candidate = ts - timedelta(days=1)
+            while candidate.weekday() >= 5:
+                candidate -= timedelta(days=1)
+            return candidate + timedelta(minutes=self.horizon_minutes)
+
+        df['lookup_time'] = df[self.datetime_col].apply(get_valid_timestamp)
+        df['lookup_dayofweek'] = df['lookup_time'].dt.dayofweek
+
+        # Only allow Mon–Fri in both current and lookup timestamps if strict mode
+        if self.strict_weekday_match:
+            df['valid_pair'] = (df['current_dayofweek'] < 5) & (df['lookup_dayofweek'] < 5)
+        else:
+            df['valid_pair'] = True
+
+        # Perform lookup
+        lookup_values = stacked.reindex(list(zip(df['lookup_time'], df[self.sensor_col]))).values
+        df[self.new_column_name] = np.where(df['valid_pair'], lookup_values, np.nan)
+
+        # Cleanup
+        df.drop(columns=['lookup_time', 'current_dayofweek', 'lookup_dayofweek', 'valid_pair'], inplace=True)
+
+        return df, [self.new_column_name]
+    
+    
+
+class PreviousWeekdayValueFeatureEngineerOptimal(LoggingMixin):
+    """
+    Adds a feature representing the value for each sensor from the previous non-weekend day,
+    shifted forward by a given horizon (in minutes). Optionally enforces that both the current 
+    and lookup timestamps must fall on weekdays.
+
+    Attributes:
+        datetime_col (str): Name of the datetime column.
+        sensor_col (str): Name of the sensor ID column.
+        value_col (str): Name of the value column.
+        horizon_minutes (int): Number of minutes to shift forward after finding the previous weekday.
+        strict_weekday_match (bool): If True, keeps the feature only if both dates are Mon–Fri.
+    """
+
+    def __init__(self, 
+                 datetime_col = 'date', 
+                 sensor_col = 'sensor_id', 
+                 value_col = 'value', 
+                 horizon_minutes = 15, 
+                 strict_weekday_match = True,
+                 disable_logs = False):
+        super().__init__(disable_logs)
+        self.datetime_col = datetime_col
+        self.sensor_col = sensor_col
+        self.value_col = value_col
+        self.horizon_minutes = horizon_minutes
+        self.strict_weekday_match = strict_weekday_match
+        self.new_column_name = f'prev_weekday_value_h{self.horizon_minutes}'
+
+    def _get_previous_weekdays(self, dates: pd.Series) -> pd.Series:
+        """
+        Vectorized computation of previous weekday + horizon offset using Series.mask.
+
+        Args:
+            dates (pd.Series): Series of datetime objects.
+
+        Returns:
+            pd.Series: New timestamps adjusted backward to last weekday and forward by horizon.
+        """
+        self._log("Computing previous weekday timestamps with horizon offset.")
+        prev = dates - pd.Timedelta(days=1)
+        prev = prev.mask(prev.dt.weekday == 6, prev - pd.Timedelta(days=2))  # Sunday → Friday
+        prev = prev.mask(prev.dt.weekday == 5, prev - pd.Timedelta(days=1))  # Saturday → Friday
+        return prev + pd.Timedelta(minutes=self.horizon_minutes)
+
+    def transform(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+        """
+        Transforms the dataframe by adding the previous weekday value feature.
+
+        Args:
+            df (pd.DataFrame): Input dataframe with sensor values.
+
+        Returns:
+            Tuple[pd.DataFrame, List[str]]: DataFrame with new column and list of added column names.
+        """
+        self._log("Starting transformation to add previous weekday value feature.")
+        df = df.copy()
+        df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
+
+        self._log("Creating pivot table for efficient value lookup.")
+        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+        stacked = pivot.stack()
+        stacked.index.names = [self.datetime_col, self.sensor_col]
+
+        self._log("Calculating lookup timestamps and filtering valid weekday pairs.")
+        df['current_dayofweek'] = df[self.datetime_col].dt.weekday
+        df['lookup_time'] = self._get_previous_weekdays(df[self.datetime_col])
+        df['lookup_dayofweek'] = df['lookup_time'].dt.weekday
+
+        if self.strict_weekday_match:
+            valid_mask = (df['current_dayofweek'] < 5) & (df['lookup_dayofweek'] < 5)
+        else:
+            valid_mask = pd.Series(True, index=df.index)
+
+        self._log("Performing reindex-based value lookup from pivoted data.")
+        lookup_index = list(zip(df['lookup_time'], df[self.sensor_col]))
+        lookup_values = stacked.reindex(lookup_index).values
+        df[self.new_column_name] = np.where(valid_mask, lookup_values, np.nan)
+
+        self._log(f"Feature '{self.new_column_name}' successfully added to dataframe.")
+        df.drop(columns=['current_dayofweek', 'lookup_time', 'lookup_dayofweek'], inplace=True)
+
+        return df, [self.new_column_name]
+
+
 
 
 class TargetVariableCreator(LoggingMixin):

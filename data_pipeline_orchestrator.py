@@ -78,8 +78,14 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         lower_bound=0.01,
         upper_bound=0.99,
         use_median_instead_of_mean_smoothing=True,
-        drop_weather=True
+        drop_weather=True,
+        add_previous_weekday_feature=True,
+        strict_weekday_match=True
     ):
+        
+        if not add_previous_weekday_feature and strict_weekday_match is not None:
+            warnings.warn("'strict_weekday_match' has no effect since 'add_previous_weekday_feature' is False")
+
 
         # Determine current smoothing strategy ID
         smoothing_id = (
@@ -155,6 +161,19 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                                                lower_bound=lower_bound, upper_bound=upper_bound)
         df, congestion_cols = congestion.transform(df)
         self.feature_log['congestion_features'] = congestion_cols
+        
+        
+        if add_previous_weekday_feature:
+            prevday = PreviousWeekdayValueFeatureEngineer(
+                datetime_col=self.datetime_col,
+                sensor_col=self.sensor_col,
+                value_col=self.value_col,
+                horizon_minutes=horizon,
+                strict_weekday_match=strict_weekday_match,
+                disable_logs=self.disable_logs
+            )
+            df, prevday_cols = prevday.transform(df)
+            self.feature_log['previous_day_features'] = prevday_cols
 
         # Step 6: Miscellaneous Features
         misc = MiscellaneousFeatureEngineer(
