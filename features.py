@@ -384,7 +384,8 @@ class MiscellaneousFeatureEngineer(LoggingMixin):
         df, id_cols = self.map_sensor_ids(df)
         if drop_weather:
             df, dropped_cols = self.drop_weather_features(df)
-        return df, id_cols + dropped_cols
+            return df, id_cols + dropped_cols
+        return df, id_cols
 
 
 class DateTimeFeatureEngineer(LoggingMixin):
