@@ -119,6 +119,7 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
                  sensor_col='sensor_id',
                  adj_are_relative = False,
                  fill_nans_value=-1,
+                 epsilon = 1e-5,
                  disable_logs=False):
         super().__init__(disable_logs)
         self.sensor_dict_path = sensor_dict_path
@@ -131,6 +132,7 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
         self.value_col = value_col
         self.sensor_col = sensor_col
         self.adj_are_relative = adj_are_relative
+        self.epsilon = epsilon
         self.new_columns = []
 
     def transform(self, df, current_smoothing=None, prev_smoothing=None):

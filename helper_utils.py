@@ -65,6 +65,66 @@ def get_filtered_X(X_train, lags, spatial_adj):
     return X
 
 
+def modify_gman(df_gman_test):
+    """
+    Prepares GMAN test results for analysis by:
+    - Filtering for the final prediction timestep
+    - Calculating prediction horizon based on timestamps
+    - Reshaping the data to long format for per-sensor predictions
+
+    Assumes:
+    - Each prediction sample includes multiple timesteps
+    - Prediction columns end with '_pred'
+
+    Args:
+        df_gman_test (pd.DataFrame): Wide-format GMAN results DataFrame. Must include
+                                     'timestamp' or 'date', 'timestep', 'sample_nr', and prediction columns.
+
+    Returns:
+        pd.DataFrame: Long-format DataFrame with columns:
+                      - 'sensor_id': sensor identifier
+                      - 'gman_prediction': predicted value
+                      - 'target_date': date of the forecasted value
+                      - 'prediction_date': date when the forecast was made
+    """
+    # --- Handle timestamp column ---
+    if 'timestamp' in df_gman_test.columns:
+        date_col = 'timestamp'
+    elif 'date' in df_gman_test.columns:
+        date_col = 'date'
+    else:
+        raise ValueError("Expected 'timestamp' or 'date' column in the input DataFrame.")
+
+    df_gman_test[date_col] = pd.to_datetime(df_gman_test[date_col])
+
+    # --- Compute prediction horizon (based on first prediction sample) ---
+    first_sample = df_gman_test[df_gman_test['sample_nr'] == 1]
+    horizon = first_sample[date_col].max() - first_sample[date_col].min() + pd.Timedelta(minutes=1)
+
+    # --- Keep only the last timestep's predictions ---
+    max_timestep = df_gman_test['timestep'].max()
+    df_latest = df_gman_test[df_gman_test['timestep'] == max_timestep]
+
+    # --- Extract relevant columns ---
+    pred_cols = [col for col in df_latest.columns if col.endswith('_pred')]
+    df_latest = df_latest[[date_col] + pred_cols]
+
+    # --- Rename sensor columns (strip '_pred') ---
+    df_latest.columns = [date_col] + [col[:-5] for col in pred_cols]
+
+    # --- Reshape to long format ---
+    df_long = df_latest.melt(
+        id_vars=date_col,
+        var_name='sensor_id',
+        value_name='gman_prediction'
+    )
+
+    # --- Add timestamps for target and prediction ---
+    df_long.rename(columns={date_col: 'gman_target_date'}, inplace=True)
+    df_long['gman_prediction_date'] = df_long['gman_target_date'] - horizon
+
+    return df_long
+
 
 def load_gman_results(p, q, directory="saved_gman_results", pattern_template="gman_results_P{p}_Q{q}*.parquet"):
     """
