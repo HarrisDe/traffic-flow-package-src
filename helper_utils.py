@@ -8,6 +8,12 @@ import glob
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import numpy as np
 import logging
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.enum.text import PP_ALIGN
+import subprocess
+from typing import Union, List, Optional
+import warnings 
 
 class LoggingMixin:
     def __init__(self, disable_logs=False):
@@ -294,141 +300,169 @@ def optimize_dtypes(df):
     return df
 
 
-import pandas as pd
-from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.enum.text import PP_ALIGN
-import subprocess
-from typing import Union, List, Optional
-import warnings 
 
 class PPTMatrixGenerator:
     """
-    A class to generate PowerPoint tables from CSV or DataFrame based on grouping criteria.
-
-    Attributes:
-        data (str or pd.DataFrame): Path to CSV file or a DataFrame.
-        columns (List[str]): List of column names for the table.
-        ppt_name (str): Output PowerPoint file name.
-        group_by (List[str]): Columns to group the data by.
-        two_tables_per_slide (bool): If True, creates two tables per slide.
-        model_column (Optional[str]): Column used to split tables if two per slide.
-        show_std_in_mae (bool): If True, formats MAE as "MAE ± MAE_std".
+    Class to generate PowerPoint presentations with matrices/tables
+    based on provided CSV or DataFrame, fully configurable.
     """
 
-    def __init__(self, 
-                 data: Union[str, pd.DataFrame], 
-                 columns: List[str],
-                 ppt_name: str,
-                 group_by: Optional[List[str]] = None,
-                 two_tables_per_slide: bool = False,
-                 model_column: Optional[str] = None,
-                 show_std_in_mae: bool = True):
+    def __init__(self,
+                 data,
+                 columns,
+                 ppt_name,
+                 group_by=None,
+                 two_tables_per_slide=False,
+                 four_tables_per_slide=False,
+                 model_column=None,
+                 show_std_in_mae=True):
+        """
+        Initialize the generator.
+
+        Args:
+            data (str or pd.DataFrame): Path to CSV file or loaded DataFrame.
+            columns (list): List of columns to include in tables.
+            ppt_name (str): Name of the output PowerPoint file.
+            group_by (list, optional): Columns to group by. Defaults to None.
+            two_tables_per_slide (bool, optional): Whether to split two tables per slide.
+            four_tables_per_slide (bool, optional): Whether to split four tables per slide (2x2 grid).
+            model_column (str, optional): Column to split inside group for multiple tables per slide.
+            show_std_in_mae (bool, optional): Whether to display MAE ± MAE_std format. Defaults to True.
+        """
         self.data = data
         self.columns = columns
         self.ppt_name = ppt_name
         self.group_by = group_by or []
         self.two_tables_per_slide = two_tables_per_slide
+        self.four_tables_per_slide = four_tables_per_slide
         self.model_column = model_column
         self.show_std_in_mae = show_std_in_mae
+
+        # Basic validation
+        if self.two_tables_per_slide and self.four_tables_per_slide:
+            raise ValueError("Cannot set both two_tables_per_slide and four_tables_per_slide to True!")
+
+        self._load_data()
+
+        # Check columns exist
+        missing_columns = [col for col in self.columns if col not in self.df.columns]
+        if missing_columns:
+            raise ValueError(f"The following columns are missing from the data: {missing_columns}")
+
+        # Check if splitting without model_column
+        if (self.two_tables_per_slide or self.four_tables_per_slide) and not self.model_column:
+            warnings.warn("Splitting tables per slide requires a 'model_column' to split by.", UserWarning)
+
         self.prs = Presentation()
         self.prs.slide_width = Inches(13.33)
         self.prs.slide_height = Inches(7.5)
-        self._load_data()
-         # Validate requested columns
-        missing_columns = [col for col in self.columns if col not in self.df.columns]
-        if missing_columns:
-            raise ValueError(f"These columns are missing in the data: {missing_columns}")
-
-        # Validate two_tables_per_slide
-        if self.two_tables_per_slide and not self.model_column:
-            warnings.warn(
-                "two_tables_per_slide=True but no model_column provided. "
-                "Will generate only one table per slide.",
-                UserWarning
-            )
 
     def _load_data(self):
-        """Load data from CSV if a path is given, else use the provided DataFrame."""
+        """Load the data if a path is provided."""
         if isinstance(self.data, str):
             self.df = pd.read_csv(self.data)
         else:
             self.df = self.data.copy()
+            
+    def _create_slide(self, base_title, model_keys, models):
+        """Create slide with 1, 2, or 4 matrices with labels."""
 
-    def _format_cell(self, cell, text: str, font_size: int = 12):
-        """Helper to format a single cell with center alignment and font size."""
-        cell.text = text
-        cell.vertical_alignment = PP_ALIGN.CENTER
-        for paragraph in cell.text_frame.paragraphs:
-            paragraph.alignment = PP_ALIGN.CENTER
-            for run in paragraph.runs:
-                run.font.name = 'Arial'
-                run.font.size = Pt(font_size)
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[5])
+        slide.shapes.title.text = base_title
 
-    def _create_table(self, slide, table_data, left, top, width, height):
-        """Create and format a table with headers and data."""
-        rows, cols = len(table_data) + 1, len(self.columns)
-        table = slide.shapes.add_table(rows, cols, left, top, width, height).table
+        if len(models) == 1:
+            lefts = [Inches(1.0)]
+            tops = [Inches(2.0)]
+            widths = [Inches(11.0)]
+            heights = [Inches(4.5)]
+        elif len(models) == 2:
+            lefts = [Inches(0.7), Inches(6.8)]
+            tops = [Inches(2.0), Inches(2.0)]
+            widths = [Inches(5.5)] * 2
+            heights = [Inches(3.5)] * 2
+        else:
+            lefts = [Inches(0.4), Inches(6.9), Inches(0.4), Inches(6.9)]
+            tops = [Inches(1.0), Inches(1.0), Inches(3.0), Inches(3.0)]
+            widths = [Inches(5.8)] * 4
+            heights = [Inches(1.5)] * 4
 
-        # Fill header
-        for col_idx, col_name in enumerate(self.columns):
-            self._format_cell(table.cell(0, col_idx), col_name)
+        for idx, df_sub in enumerate(models):
+            if idx >= len(lefts):
+                break
 
-        # Fill table data
-        for row_idx, row_data in enumerate(table_data, start=1):
-            for col_idx, value in enumerate(row_data):
-                self._format_cell(table.cell(row_idx, col_idx), value)
+            table_data = self._prepare_table_data(df_sub)
+            rows, cols = len(table_data) + 1, len(self.columns)
 
-    def _generate_single_slide(self, group_df, title_text: str):
-        """Generate a slide with either one or two tables depending on settings."""
-        slide_layout = self.prs.slide_layouts[5]
-        slide = self.prs.slides.add_slide(slide_layout)
-        slide.shapes.title.text = title_text
+            # Add the table
+            table = slide.shapes.add_table(rows, cols, lefts[idx], tops[idx], widths[idx], heights[idx]).table
 
-        if self.two_tables_per_slide and self.model_column:
-            models = group_df[self.model_column].unique()
-            for idx, model in enumerate(models):
-                model_df = group_df[group_df[self.model_column] == model]
-                table_data = self._prepare_table_data(model_df)
-                left = Inches(0.7 + 6.2 * (idx % 2))
-                top = Inches(1.7)
-                width = Inches(6.0)
-                height = Inches(0.8)
-                self._create_table(slide, table_data, left, top, width, height)
-
-                # Add model label above the table
-                textbox = slide.shapes.add_textbox(left, Inches(1.3), width, Inches(0.3))
-                tf = textbox.text_frame
-                tf.text = f"{self.model_column}: {model}"
+            # Add label above each table
+            if model_keys:
+                label = str(model_keys[idx])
+                label_box = slide.shapes.add_textbox(
+                    lefts[idx],
+                    tops[idx] - Inches(0.3),
+                    widths[idx],
+                    Inches(0.3)
+                )
+                tf = label_box.text_frame
+                tf.text = label
                 tf.paragraphs[0].alignment = PP_ALIGN.CENTER
                 run = tf.paragraphs[0].runs[0]
-                run.font.name = 'Arial'
-                run.font.size = Pt(14)
-        else:
-            table_data = self._prepare_table_data(group_df)
-            left, top, width, height = Inches(1), Inches(1.5), Inches(9), Inches(0.8)
-            self._create_table(slide, table_data, left, top, width, height)
+                run.font.name = self.font_name
+                run.font.size = Pt(self.cell_font_size)
 
-    def _prepare_table_data(self, df_subset):
-        """Prepare data for filling a table, formatting numbers and strings."""
-        table_data = []
-        for _, row in df_subset.iterrows():
-            row_data = []
-            for col in self.columns:
-                if col == "MAE" and self.show_std_in_mae and "MAE_std" in row:
-                    formatted = f"{row['MAE']:.2f} ± {row['MAE_std']:.1f}"
-                else:
-                    val = row[col]
-                    if isinstance(val, float):
-                        formatted = f"{val:.2f}"
-                    else:
-                        formatted = str(val)
-                row_data.append(formatted)
-            table_data.append(row_data)
-        return table_data
+            # Table header
+            for col_idx, col_name in enumerate(self.columns):
+                cell = table.cell(0, col_idx)
+                cell.text = col_name
+                self._format_cell(cell, header=True)
 
-    def generate(self, open_after: bool = True):
-        """Main method to create the PowerPoint file."""
+            # Table data
+            for row_idx, row_data in enumerate(table_data, start=1):
+                for col_idx, value in enumerate(row_data):
+                    cell = table.cell(row_idx, col_idx)
+                    cell.text = value
+                    self._format_cell(cell, header=False)
+
+    def generate(self,
+                 font_name="Arial",
+                 header_font_size=None,
+                 cell_font_size=None,
+                 alignment="CENTER",
+                 open_after=True):
+        """
+        Generate the PowerPoint presentation.
+
+        Args:
+            font_name (str, optional): Font name for text.
+            header_font_size (int, optional): Header font size.
+            cell_font_size (int, optional): Cell font size.
+            alignment (str, optional): LEFT, CENTER, or RIGHT.
+            open_after (bool, optional): Automatically open the PPT after creation.
+        """
+
+        # Auto-set font sizes
+        if not header_font_size:
+            header_font_size = 16 if not (self.two_tables_per_slide or self.four_tables_per_slide) else 14
+            header_font_size = 12 if self.four_tables_per_slide else header_font_size
+
+        if not cell_font_size:
+            cell_font_size = 14 if not (self.two_tables_per_slide or self.four_tables_per_slide) else 12
+            cell_font_size = 10 if self.four_tables_per_slide else cell_font_size
+
+        # Validate alignment
+        valid_alignments = {"LEFT": PP_ALIGN.LEFT, "CENTER": PP_ALIGN.CENTER, "RIGHT": PP_ALIGN.RIGHT}
+        if alignment.upper() not in valid_alignments:
+            warnings.warn("Invalid alignment specified. Defaulting to CENTER.", UserWarning)
+            alignment = "CENTER"
+
+        self.alignment = valid_alignments[alignment.upper()]
+        self.font_name = font_name
+        self.header_font_size = header_font_size
+        self.cell_font_size = cell_font_size
+
+        # Group or not
         if self.group_by:
             grouped = self.df.groupby(self.group_by)
         else:
@@ -442,18 +476,17 @@ class PPTMatrixGenerator:
             else:
                 base_title = "All Results"
 
-            if self.two_tables_per_slide and self.model_column:
+            if (self.two_tables_per_slide or self.four_tables_per_slide) and self.model_column:
                 model_grouped = group.groupby(self.model_column)
                 model_keys = list(model_grouped.groups.keys())
+                per_slide = 2 if self.two_tables_per_slide else 4
 
-                for i in range(0, len(model_keys), 2):
-                    selected_keys = model_keys[i:i+2]
-                    subset = pd.concat([model_grouped.get_group(k) for k in selected_keys])
-
-                    slide_title = base_title + " | " + " vs ".join(str(k) for k in selected_keys)
-                    self._generate_single_slide(subset, slide_title)
+                for i in range(0, len(model_keys), per_slide):
+                    selected_keys = model_keys[i:i+per_slide]
+                    models = [model_grouped.get_group(k) for k in selected_keys]
+                    self._create_slide(base_title, selected_keys, models)
             else:
-                self._generate_single_slide(group, base_title)
+                self._create_slide(base_title, None, [group])
 
         self.prs.save(self.ppt_name)
         if open_after:
@@ -464,3 +497,55 @@ class PPTMatrixGenerator:
                     subprocess.call(["start", self.ppt_name], shell=True)  # Windows
                 except Exception:
                     pass
+
+    def _prepare_table_data(self, df_subset):
+        """Prepare formatted rows for the table."""
+        table_data = []
+        for _, row in df_subset.iterrows():
+            row_data = []
+            for col in self.columns:
+                if col == "MAE" and self.show_std_in_mae:
+                    formatted = f"{row['MAE']:.2f} ± {row['MAE_std']:.1f}"
+                else:
+                    val = row[col]
+                    formatted = f"{val:.2f}" if isinstance(val, float) else str(val)
+                row_data.append(formatted)
+            table_data.append(row_data)
+        return table_data
+
+    
+
+    def _format_cell(self, cell, header=False):
+        """Format a cell with font and alignment."""
+        cell.vertical_alignment = PP_ALIGN.CENTER
+        for paragraph in cell.text_frame.paragraphs:
+            paragraph.alignment = self.alignment
+            for run in paragraph.runs:
+                run.font.name = self.font_name
+                run.font.size = Pt(self.header_font_size if header else self.cell_font_size)
+
+    @staticmethod
+    def create_combination_column(df, columns_to_combine, new_column_name="combination_label", insert_first=False):
+        """
+        Create a new combined label column based on multiple columns.
+
+        Args:
+            df (pd.DataFrame): Input dataframe.
+            columns_to_combine (list of str): Columns to combine.
+            new_column_name (str): Name for the new column.
+            insert_first (bool): Whether to insert the new column as first column.
+
+        Returns:
+            pd.DataFrame
+        """
+        def combine_row(row):
+            parts = [f"{col}-{row[col]}" for col in columns_to_combine]
+            return "_".join(parts)
+
+        df[new_column_name] = df.apply(combine_row, axis=1)
+
+        if insert_first:
+            cols = [new_column_name] + [col for col in df.columns if col != new_column_name]
+            df = df[cols]
+
+        return df
