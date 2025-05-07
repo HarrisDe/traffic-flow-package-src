@@ -12,7 +12,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 import subprocess
-from typing import Union, List, Optional
+from typing import List, Dict, Optional, Union, Tuple
 import warnings 
 
 class LoggingMixin:
