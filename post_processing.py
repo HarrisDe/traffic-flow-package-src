@@ -44,7 +44,7 @@ class PredictionCorrection:
         self.df_for_ML = df_for_ML
         self.rounding = rounding
 
-    def naive_based_correction(self, y_pred, threshold=0.5):
+    def naive_based_correction(self, y_pred, naive_threshold=0.5):
         """
         Replace predictions deviating significantly from the naive prediction (current speed) by the naive prediction.
 
@@ -58,7 +58,7 @@ class PredictionCorrection:
         current_speed = self.X_test['value'].values
         deviation = np.abs(y_pred - current_speed) / current_speed
         
-        mask = deviation > threshold
+        mask = deviation > naive_threshold
         corrected_y_pred = y_pred.copy()
         corrected_y_pred[mask] = current_speed[mask]
 

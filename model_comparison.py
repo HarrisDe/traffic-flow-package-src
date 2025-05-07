@@ -9,6 +9,7 @@ from keras.models import load_model
 import matplotlib.patheffects as PathEffects
 #from .data_processing import TrafficFlowDataProcessing
 from .helper_utils import normalize_data
+from .post_processing import PredictionCorrection
 import seaborn as sns
 sns.set_style('darkgrid')
 import warnings
@@ -23,7 +24,8 @@ class ModelEvaluator:
     It computes error metrics and their standard deviations for each model, with optional rounding.
     """
 
-    def __init__(self, X_test, df_for_ML, y_train=None, y_test=None, rounding=2, discard_zero_mape=False, target_is_gman_error_prediction=True, y_is_normalized=False, epsilon=1e-2):
+    def __init__(self, X_test, df_for_ML, y_train=None, y_test=None, rounding=2, prediction_correction=None,
+                 discard_zero_mape=False, target_is_gman_error_prediction=True, y_is_normalized=False, epsilon=1e-2):
         """
         Initialize the ModelEvaluator with test data.
 
@@ -59,6 +61,7 @@ class ModelEvaluator:
                 df_for_ML['test_set'] == False, 'target'].std()
             print(
                 f"from df_for_ML, y_mean is {y_mean_df_for_ML}, y_std is {y_std_df_for_ML}")
+            
 
         #     # Apply Z-de-Normalization
         #     print('self.y_test is being de-normalized')
@@ -83,6 +86,7 @@ class ModelEvaluator:
 
         else:
             self.calculate_mape_with_handling_zero_values = False
+        self.prediction_correction = ( prediction_correction or PredictionCorrection(X_test, self.y_test, self.df_for_ML, rounding))
 
     def calculate_discarded_percentage(self):
         """
@@ -149,6 +153,142 @@ class ModelEvaluator:
         #print(f'Mean of y_pred AFTER RECONSTRUCTION is: {round(np.mean(y_pred),2)} kph of total speed')
 
         return y_pred, self.y_pred_before_reconstruction
+    
+    
+    def evaluate_model_from_path_with_correction(
+        self, 
+        model_path, 
+        apply_correction=True, 
+        correction_method='naive_based_correction', 
+        correction_kwargs={'naive_threshold': 0.7}, 
+        print_results=True
+    ):
+        """
+        Evaluate a single model with options for applying prediction correction.
+
+        Parameters:
+        - model_path: str - Path to the model file (.pkl or .h5).
+        - apply_correction: bool - Whether to apply prediction correction.
+        - correction_method: str - Name of the method in PredictionCorrection class.
+        - correction_kwargs: dict - Additional arguments for the correction method.
+        - print_results: bool - Whether to print the evaluation results.
+
+        Returns:
+        - dict: Contains original and corrected prediction metrics and errors.
+        """
+        correction_kwargs = correction_kwargs or {}
+
+        # Obtain original predictions (no correction applied yet)
+        y_pred_original, _ = self.get_predictions(model_path)
+
+        # Calculate metrics on original predictions
+        original_results = self.calculate_metrics(y_pred_original, prefix='Original')
+
+        corrected_results = None
+        if apply_correction:
+            # Dynamically get correction method from PredictionCorrection class
+            correction_fn = getattr(self.prediction_correction, correction_method)
+            
+            # Apply prediction correction
+            y_pred_corrected = correction_fn(y_pred_original.copy(), **correction_kwargs)
+            
+            # Calculate metrics on corrected predictions
+            corrected_results = self.calculate_metrics(y_pred_corrected, prefix='Corrected')
+
+        # Compile both original and corrected results into a structured dictionary
+        results = {
+            'original': original_results,
+            'corrected': corrected_results
+        }
+
+        # Optionally print results clearly distinguishing original from corrected
+        if print_results:
+            print("\n=== Original (No Correction Applied) ===")
+            self.print_evaluation_results(**original_results)
+            
+            if corrected_results:
+                print("\n=== Corrected Predictions ===")
+                self.print_evaluation_results(**corrected_results)
+
+        return results
+    
+    def calculate_metrics(self, y_pred, prefix=''):
+        """
+        Calculate evaluation metrics and their standard deviations.
+
+        Parameters:
+        - y_pred: np.ndarray - Predicted values (already reconstructed).
+        - prefix: str - Optional prefix to distinguish original and corrected metrics.
+
+        Returns:
+        - dict: Contains metrics, metrics_std, naive_metrics, naive_metrics_std.
+        """
+        # Calculate prediction errors
+        errors = self.y_test - y_pred
+        abs_errors = np.abs(errors)
+
+        # Standard error metrics
+        mae = mean_absolute_error(self.y_test, y_pred)
+        median_ae = median_absolute_error(self.y_test, y_pred)
+        rmse = mean_squared_error(self.y_test, y_pred, squared=False)
+
+        # MAPE calculation with handling zeros if required
+        if not self.calculate_mape_with_handling_zero_values:
+            mape = mean_absolute_percentage_error(self.y_test, y_pred)
+        else:
+            mape, _, _, _ = self.calculate_mape_in_case_of_zero_values(y_pred)
+
+        # Compute standard deviations of errors
+        mae_std = np.std(abs_errors)
+        rmse_std = np.std(errors ** 2)
+        mape_std = np.std(abs_errors / np.abs(self.y_test))
+
+        # Naive metrics (assuming no speed change as naive prediction)
+        naive_error = np.abs(self.y_test_before_reconstruction)
+        naive_mae = np.mean(naive_error)
+        naive_median_ae = np.median(naive_error)
+        naive_rmse = np.sqrt(np.mean(naive_error ** 2))
+
+        if not self.calculate_mape_with_handling_zero_values:
+            naive_mape = np.mean(naive_error / np.abs(self.y_test))
+        else:
+            _, _, naive_mape, _ = self.calculate_mape_in_case_of_zero_values(y_pred)
+
+        # Aggregating metrics with rounding
+        metrics = {
+            f'{prefix}_MAE': round(mae, self.rounding),
+            f'{prefix}_Median_AE': round(median_ae, self.rounding),
+            f'{prefix}_RMSE': round(rmse, self.rounding),
+            f'{prefix}_MAPE': round(mape * 100, self.rounding),
+        }
+
+        naive_metrics = {
+            f'{prefix}_Naive_MAE': round(naive_mae, self.rounding),
+            f'{prefix}_Naive_Median_AE': round(naive_median_ae, self.rounding),
+            f'{prefix}_Naive_RMSE': round(naive_rmse, self.rounding),
+            f'{prefix}_Naive_MAPE': round(naive_mape * 100, self.rounding),
+        }
+
+        metrics_std = {
+            f'{prefix}_MAE_std': round(mae_std, self.rounding),
+            f'{prefix}_Median_AE_std': round(mae_std, self.rounding),
+            f'{prefix}_RMSE_std': round(rmse_std, self.rounding),
+            f'{prefix}_MAPE_std': round(mape_std * 100, self.rounding),
+        }
+
+        naive_metrics_std = {
+            f'{prefix}_Naive_MAE_std': round(np.std(naive_error), self.rounding),
+            f'{prefix}_Naive_Median_AE_std': round(np.std(naive_error), self.rounding),
+            f'{prefix}_Naive_RMSE_std': round(np.std(naive_error ** 2), self.rounding),
+            f'{prefix}_Naive_MAPE_std': round(np.std(naive_error / np.abs(self.y_test)) * 100, self.rounding),
+        }
+
+        return {
+            "metrics": metrics,
+            "metrics_std": metrics_std,
+            "naive_metrics": naive_metrics,
+            "naive_metrics_std": naive_metrics_std
+        }
 
     def evaluate_model_from_path(self, model_path, print_results=True):
         """
@@ -161,6 +301,7 @@ class ModelEvaluator:
 
         # Get predictions (y_pred-->prediction of the total speed, y_pred_before_reconstruction --> prediction of the gman error)
         y_pred, y_pred_before_reconstruction = self.get_predictions(model_path)
+        
 
         # Compute per-sample errors˝ (y_test is the actual total speed, y_pred is the predicted total speed)
         errors = self.y_test - y_pred
