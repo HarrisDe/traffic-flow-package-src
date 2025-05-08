@@ -24,8 +24,213 @@ logging.basicConfig(
 import numpy as np
 import pandas as pd
 
+"""python
+###############################################################################
+# prediction_correction.py                                                    #
+# --------------------------------------------------------------------------- #
+# Vectorised per-sensor prediction post-processing utilities.                  #
+# Each method works on the **concatenated** y_pred vector that contains the   #
+# sequential predictions of *all* sensors, in the same order as they appear   #
+# in `df_for_ML[df_for_ML['test_set']]`.  All operations are executed         #
+# **sensor-wise** under the hood, but without explicit Python loops, relying  #
+# on pandas group-by/vectorised routines for efficiency.                      #
+###############################################################################
+"""
+from __future__ import annotations
+
+from typing import Optional, Union, Dict, Any
+
+import numpy as np
+import pandas as pd
+from pykalman import KalmanFilter
+
+__all__ = [
+    "PredictionCorrection",
+]
+
 
 class PredictionCorrection:
+    """Post-process sequential predictions sensor-by-sensor in a *vectorised* way.
+
+    Parameters
+    ----------
+    X_test : pandas.DataFrame
+        Feature matrix used at inference time **for the test set only**.  Must
+        contain a *value* column that holds the current speed.
+    y_test : array-like
+        Ground-truth reconstructed speed values (same length/order as
+        ``X_test``).
+    df_for_ML : pandas.DataFrame, optional
+        Full modelling dataframe.  It must contain the boolean column
+        ``test_set`` **and** a ``sensor_id`` column.  Training rows (``False``)
+        are used to derive per-sensor statistics (min / max / variance).
+    rounding : int, default=2
+        Decimal precision applied to all returned arrays.  Use ``None`` to
+        disable rounding.
+    """
+
+    # ---------------------------------------------------------------------
+    # Construction helpers
+    # ---------------------------------------------------------------------
+    def __init__(
+        self,
+        X_test: pd.DataFrame,
+        y_test: Union[np.ndarray, pd.Series],
+        df_for_ML: pd.DataFrame,
+        rounding: int | None = 2,
+    ) -> None:
+        # Store main arrays
+        self.X_test = X_test.reset_index(drop=True)
+        self.y_test = np.asarray(y_test)
+        self.rounding = rounding
+
+        # ----------------------------------------------------------------
+        # Extract sensor meta-data *once* (vector of length = test rows)
+        # ----------------------------------------------------------------
+        test_mask = df_for_ML["test_set"].values
+        if not test_mask.any():
+            raise ValueError("`df_for_ML` must contain at least one test row.")
+
+        # Sensor ids aligned with y_pred/y_test order
+        self.sensor_ids = df_for_ML.loc[test_mask, "sensor_id"].reset_index(drop=True)
+
+        # Pre-compute per-sensor train statistics for fast vectorised use
+        train_stats = (
+            df_for_ML.loc[~test_mask, ["sensor_id", "value"]]
+            .groupby("sensor_id")["value"]
+            .agg(["min", "max", "var", "mean"])
+        )
+        self._min_by_sensor = train_stats["min"]
+        self._max_by_sensor = train_stats["max"]
+        self._var_by_sensor = train_stats["var"].fillna(train_stats["var"].mean())
+        self._mean_by_sensor = train_stats["mean"]
+
+        # Broadcast min / max to row level once for later *O(1)* look-ups
+        self._row_min = self.sensor_ids.map(self._min_by_sensor).values
+        self._row_max = self.sensor_ids.map(self._max_by_sensor).values
+
+    # ------------------------------------------------------------------
+    # Vectorised helpers
+    # ------------------------------------------------------------------
+    def _to_series(self, y_pred: np.ndarray, name: str = "pred") -> pd.Series:
+        """Return *y_pred* as a pandas Series with sensor_id as second level."""
+        s = pd.Series(y_pred, name=name)
+        # Attach sensor_id as second level to enable fast group-wise ops
+        s.index = pd.MultiIndex.from_arrays([s.index, self.sensor_ids], names=["row", "sensor"])
+        return s
+
+    # ------------------------------------------------------------------
+    # Post-processing methods
+    # ------------------------------------------------------------------
+    def naive_based_correction(self, y_pred: np.ndarray, *, naive_threshold: float = 0.5) -> np.ndarray:
+        """Clamp predictions that deviate *too much* from the current speed.
+
+        The *current speed* per row is simply the value in ``X_test['value']``.
+        Any prediction whose **relative absolute deviation** exceeds the given
+        ``naive_threshold`` is replaced by that naive value.
+        """
+        current_speed = self.X_test["value"].values
+        deviation = np.abs(y_pred - current_speed) / np.maximum(current_speed, 1e-9)
+        mask = deviation > naive_threshold
+        corrected = np.where(mask, current_speed, y_pred)
+        return np.round(corrected, self.rounding) if self.rounding is not None else corrected
+
+    def rolling_median_correction(self, y_pred: np.ndarray, *, window_size: int = 3) -> np.ndarray:
+        """Apply a *per-sensor* centred rolling-median filter (spike removal)."""
+        s = self._to_series(y_pred)
+        # groupby+rolling keeps everything in compiled C loops – fast!
+        smoothed = (
+            s.groupby(level="sensor", sort=False)
+            .rolling(window_size, center=False, min_periods=1)
+            .median()
+            .droplevel("sensor")  # back to single-level index
+            .sort_index()          # restore original row order
+            .values
+        )
+        return np.round(smoothed, self.rounding) if self.rounding is not None else smoothed
+
+    def ewma_smoothing(self, y_pred: np.ndarray, *, span: int = 3) -> np.ndarray:
+        """Per-sensor Exponentially Weighted Moving Average smoothing."""
+        s = self._to_series(y_pred)
+        smoothed = (
+            s.groupby(level="sensor", sort=False)
+            .apply(lambda x: x.droplevel("sensor").ewm(span=span, adjust=False).mean())
+            .droplevel("sensor")
+            .sort_index()
+            .values
+        )
+        return np.round(smoothed, self.rounding) if self.rounding is not None else smoothed
+
+    def constrain_predictions(
+        self,
+        y_pred: np.ndarray,
+        *,
+        min_speed: Optional[np.ndarray] = None,
+        max_speed: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Clip predictions to realistic *per-sensor* speed bounds."""
+        mins = min_speed if min_speed is not None else self._row_min
+        maxs = max_speed if max_speed is not None else self._row_max
+        constrained = np.clip(y_pred, mins, maxs)
+        return np.round(constrained, self.rounding) if self.rounding is not None else constrained
+
+    # ------------------------------------------------------------------
+    # Kalman smoothing (cannot be fully vectorised – lightweight loop)
+    # ------------------------------------------------------------------
+    def kalman_smoothing(self, y_pred: np.ndarray) -> np.ndarray:
+        """Run a simple scalar Kalman filter **per sensor**.
+
+        Notes
+        -----
+        • True full vectorisation is infeasible because each sensor keeps its
+          own latent state.  We still avoid Python–level overhead by *pre-
+          building* one filter configuration and streaming each sensor’s
+          vector through it.
+        • This step is optional and typically slower than the other
+          corrections; consider disabling it if runtime is critical.
+        """
+        result = np.empty_like(y_pred, dtype=float)
+        s = self._to_series(y_pred)
+
+        # Shared filter parameters derived from *all* training data
+        kf = KalmanFilter(
+            transition_matrices=[1.0],
+            observation_matrices=[1.0],
+            transition_covariance=0.01,
+        )
+
+        for sensor_id, values in s.groupby(level="sensor", sort=False):
+            vec = values.droplevel("sensor").values.reshape(-1, 1)
+            # Set sensor-specific initial state using training stats
+            kf.initial_state_mean = self._mean_by_sensor.loc[sensor_id]
+            kf.initial_state_covariance = self._var_by_sensor.loc[sensor_id] or 1.0
+            kf.observation_covariance = self._var_by_sensor.loc[sensor_id] or 1.0
+            smoothed, _ = kf.smooth(vec)
+            result[values.index.get_level_values("row")] = smoothed.ravel()
+
+        return np.round(result, self.rounding) if self.rounding is not None else result
+
+    # ------------------------------------------------------------------
+    # Convenience orchestrator
+    # ------------------------------------------------------------------
+    def apply_all_corrections(
+        self,
+        y_pred: np.ndarray,
+        *,
+        naive_threshold: float = 0.5,
+        rolling_window: int = 3,
+        ewma_span: int = 3,
+        clip: bool = True,
+    ) -> np.ndarray:
+        """Pipeline that chains the main corrections in a sensible order."""
+        y = self.naive_based_correction(y_pred, naive_threshold=naive_threshold)
+        y = self.rolling_median_correction(y, window_size=rolling_window)
+        y = self.ewma_smoothing(y, span=ewma_span)
+        if clip:
+            y = self.constrain_predictions(y)
+        return y
+
+class PredictionCorrectionPerTimeSeries:
     """
     Class to apply post-processing corrections to time-series predictions.
     This class assumes y_pred and y_test are already reconstructed speed values.
@@ -42,6 +247,7 @@ class PredictionCorrection:
         self.X_test = X_test
         self.y_test = y_test
         self.df_for_ML = df_for_ML
+        self.train_values = self.df_for_ML.loc[~self.df_for_ML['test_set'], 'value'].values
         self.rounding = rounding
 
     def naive_based_correction(self, y_pred, naive_threshold=0.5):
@@ -115,8 +321,9 @@ class PredictionCorrection:
         Returns:
         - constrained_y_pred: np.ndarray - Predictions constrained to historical bounds.
         """
-        min_speed = min_speed if min_speed is not None else self.X_test['value'].min()
-        max_speed = max_speed if max_speed is not None else self.X_test['value'].max()
+
+        min_speed = min_speed if min_speed is not None else self.train_values.min()
+        max_speed = max_speed if max_speed is not None else self.train_values.max()
 
         constrained_y_pred = np.clip(y_pred, min_speed, max_speed)
 
@@ -137,9 +344,9 @@ class PredictionCorrection:
         - smoothed_y_pred: np.ndarray - Kalman-filtered predictions.
         """
         # Estimate initial parameters from training data
-        train_values = self.df_for_ML.loc[~self.df_for_ML['test_set'], 'value'].values
-        initial_state_mean = np.mean(train_values)
-        initial_state_covariance = np.var(train_values)
+        
+        initial_state_mean = np.mean(self.train_values)
+        initial_state_covariance = np.var(self.train_values)
 
         # Define Kalman filter
         kf = KalmanFilter(
@@ -147,7 +354,7 @@ class PredictionCorrection:
             initial_state_covariance=initial_state_covariance,
             transition_matrices=[1],  # assumes next state is similar to current
             observation_matrices=[1],
-            observation_covariance=np.var(train_values),  # measurement noise
+            observation_covariance=np.var(self.train_values),  # measurement noise
             transition_covariance=0.01  # small transition noise
         )
 
@@ -171,7 +378,7 @@ class PredictionCorrection:
         Returns:
         - y_pred_final: np.ndarray - Predictions after all corrections.
         """
-        y_pred_corrected = self.naive_based_correction(y_pred, threshold=naive_threshold)
+        y_pred_corrected = self.naive_based_correction(y_pred, naive_threshold)
         y_pred_corrected = self.rolling_median_correction(y_pred_corrected, window_size=rolling_window)
         y_pred_corrected = self.ewma_smoothing(y_pred_corrected, span=ewma_span)
         y_pred_final = self.constrain_predictions(y_pred_corrected)
