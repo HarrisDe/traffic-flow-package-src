@@ -161,7 +161,8 @@ class ModelEvaluator:
         apply_correction=True, 
         correction_method='naive_based_correction', 
         correction_kwargs={'naive_threshold': 0.7}, 
-        print_results=True
+        print_results=True,
+        return_preds = False
     ):
         """
         Evaluate a single model with options for applying prediction correction.
@@ -209,6 +210,9 @@ class ModelEvaluator:
             if corrected_results:
                 print("\n=== Corrected Predictions ===")
                 self.print_evaluation_results(**corrected_results)
+        
+        if return_preds:
+            return results, y_pred_original, y_pred_corrected
 
         return results
     
@@ -605,7 +609,7 @@ class ModelEvaluator_deprecated:
 
         return y_pred, y_pred_before_reconstruction
 
-    def evaluate_model_from_path(self, model_path, print_results=True):
+    def evaluate_model_from_path(self, model_path,return_preds = False,print_results=True):
         """
         Evaluate a single model (loaded from model_path) on test data and return four dictionaries:
         1. metrics: A dictionary of error metrics: MAE, Median Absolute Error, RMSE, MAPE.
@@ -716,6 +720,9 @@ class ModelEvaluator_deprecated:
         }
 
         # return metrics, metrics_std, naive_metrics, naive_metrics_std
+        
+        if return_preds:
+            return y_pred,results
         return results
 
     def print_evaluation_results(self, metrics, metrics_std, naive_metrics, naive_metrics_std):

@@ -36,17 +36,13 @@ import pandas as pd
 # on pandas group-by/vectorised routines for efficiency.                      #
 ###############################################################################
 """
-from __future__ import annotations
+
 
 from typing import Optional, Union, Dict, Any
 
 import numpy as np
 import pandas as pd
 from pykalman import KalmanFilter
-
-__all__ = [
-    "PredictionCorrection",
-]
 
 
 class PredictionCorrection:
@@ -230,13 +226,16 @@ class PredictionCorrection:
             y = self.constrain_predictions(y)
         return y
 
-class PredictionCorrectionPerTimeSeries:
+class PredictionCorrectionPerSensor:
     """
     Class to apply post-processing corrections to time-series predictions.
     This class assumes y_pred and y_test are already reconstructed speed values.
+    It's mainly to be used in order to ensure resulting sensor time-series after
+    prediction correction are the same as the ones of the class PredictionCorrection
+    (which applies at once the corrections to the complete dataset).
     """
 
-    def __init__(self, X_test, y_test, df_for_ML=None, rounding=2):
+    def __init__(self, X_test, y_test,sensor_uid, df_for_ML=None,rounding=2):
         """
         Parameters:
         - X_test: pd.DataFrame - Test features used to create predictions.
@@ -244,11 +243,44 @@ class PredictionCorrectionPerTimeSeries:
         - df_for_ML: pd.DataFrame (optional) - Additional data if needed.
         - rounding: int - Decimal rounding for corrected predictions.
         """
-        self.X_test = X_test
-        self.y_test = y_test
-        self.df_for_ML = df_for_ML
-        self.train_values = self.df_for_ML.loc[~self.df_for_ML['test_set'], 'value'].values
+        
+        if sensor_uid is not None:
+            self.X_test_sensor  = X_test.loc[X_test['sensor_uid']==sensor_uid]
+        else:
+            self.X_test_sensor = X_test
+        sensor_idx = self.X_test_sensor.index
+        
+        if not sensor_idx.isin(y_test.index).all():
+            raise ValueError("Indices of y_test do not align with X_test.")
+        self.y_test = y_test.loc[sensor_idx]
+        if df_for_ML is not None:
+            self.df_for_ML = df_for_ML.loc[sensor_idx]
+            self.train_values = self.df_for_ML.loc[~self.df_for_ML['test_set'], 'value'].values
+        else:
+            self.df_for_ML = None
+            self.train_values = None
+            warnings.warn(
+                "df_for_ML is None. Methods that rely on train_values (e.g., constrain_predictions, kalman_smoothing) will not work.",
+                UserWarning
+            )
+        
         self.rounding = rounding
+    
+    
+    def _align_predictions_to_sensor(self, y_pred):
+        """
+        Align y_pred to the current sensor's index if possible.
+
+        Parameters:
+        - y_pred: pd.Series, pd.DataFrame, or np.ndarray
+
+        Returns:
+        - np.ndarray: predictions aligned to self.X_test.index
+        """
+        sensor_idx = self.X_test_sensor.index
+        y_pred = y_pred.loc[sensor_idx]
+        self.y_pred_per_sensor = y_pred
+        return y_pred
 
     def naive_based_correction(self, y_pred, naive_threshold=0.5):
         """
@@ -261,7 +293,8 @@ class PredictionCorrectionPerTimeSeries:
         Returns:
         - corrected_y_pred: np.ndarray - Corrected predictions.
         """
-        current_speed = self.X_test['value'].values
+        y_pred = self._align_predictions_to_sensor(y_pred)
+        current_speed = self.X_test_sensor['value'].values
         deviation = np.abs(y_pred - current_speed) / current_speed
         
         mask = deviation > naive_threshold
@@ -284,6 +317,7 @@ class PredictionCorrectionPerTimeSeries:
         Returns:
         - smoothed_y_pred: np.ndarray - Smoothed predictions.
         """
+        y_pred = self._align_predictions_to_sensor(y_pred)
         smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=True, min_periods=1).median().values
 
         if self.rounding is not None:
@@ -302,6 +336,8 @@ class PredictionCorrectionPerTimeSeries:
         Returns:
         - smoothed_y_pred: np.ndarray - Smoothed predictions.
         """
+        
+        y_pred = self._align_predictions_to_sensor(y_pred)
         smoothed_y_pred = pd.Series(y_pred).ewm(span=span, adjust=False).mean().values
 
         if self.rounding is not None:
@@ -321,6 +357,9 @@ class PredictionCorrectionPerTimeSeries:
         Returns:
         - constrained_y_pred: np.ndarray - Predictions constrained to historical bounds.
         """
+        y_pred = self._align_predictions_to_sensor(y_pred)
+        if self.train_values is None:
+            raise ValueError("df_for_ML was not provided or contains no training data.")
 
         min_speed = min_speed if min_speed is not None else self.train_values.min()
         max_speed = max_speed if max_speed is not None else self.train_values.max()
@@ -343,6 +382,9 @@ class PredictionCorrectionPerTimeSeries:
         Returns:
         - smoothed_y_pred: np.ndarray - Kalman-filtered predictions.
         """
+        if self.train_values is None:
+            raise ValueError("df_for_ML was not provided or contains no training data.")
+        
         # Estimate initial parameters from training data
         
         initial_state_mean = np.mean(self.train_values)
@@ -384,3 +426,6 @@ class PredictionCorrectionPerTimeSeries:
         y_pred_final = self.constrain_predictions(y_pred_corrected)
 
         return y_pred_final
+
+    
+    
