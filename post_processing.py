@@ -318,7 +318,7 @@ class PredictionCorrectionPerSensor:
         - smoothed_y_pred: np.ndarray - Smoothed predictions.
         """
         y_pred = self._align_predictions_to_sensor(y_pred)
-        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=True, min_periods=1).median().values
+        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=False, min_periods=1).median().values
 
         if self.rounding is not None:
             smoothed_y_pred = np.round(smoothed_y_pred, self.rounding)
