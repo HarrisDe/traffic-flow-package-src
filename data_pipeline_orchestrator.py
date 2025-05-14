@@ -198,6 +198,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
 
         # Store outputs
         self.df = df
+        self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
         self.all_added_features = list(
             set(col for cols in self.feature_log.values() for col in cols))
 
@@ -211,7 +212,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         y_test = test_df['target']
 
         cols_to_drop = ['sensor_id', 'target_total_speed',
-                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
+                        'target_speed_delta', 'date', 'sensor_id', 
+                        'test_set', 'gman_prediction_date', 'gman_target_date','date_of_prediction']
 
         # Drop unwanted columns
         for df in [X_train, X_test]:
