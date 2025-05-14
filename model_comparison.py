@@ -229,6 +229,8 @@ class ModelEvaluator:
         """
         # Calculate prediction errors
         errors = self.y_test - y_pred
+        self.errors_delta_speed = errors
+        self.errors_absolute_speed = self.y_test - self.y_pred_before_reconstruction
         abs_errors = np.abs(errors)
 
         # Standard error metrics
