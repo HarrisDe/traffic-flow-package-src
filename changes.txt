@@ -1,448 +1,507 @@
+diff --git a/__pycache__/data_pipeline_orchestrator.cpython-310.pyc b/__pycache__/data_pipeline_orchestrator.cpython-310.pyc
+index 9ca3d41..529830e 100644
+Binary files a/__pycache__/data_pipeline_orchestrator.cpython-310.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-310.pyc differ
+diff --git a/__pycache__/post_processing.cpython-310.pyc b/__pycache__/post_processing.cpython-310.pyc
+index 26806c6..89a88e4 100644
+Binary files a/__pycache__/post_processing.cpython-310.pyc and b/__pycache__/post_processing.cpython-310.pyc differ
 diff --git a/changes.txt b/changes.txt
-index b25071a..e69de29 100644
+index 79337b8..e69de29 100644
 --- a/changes.txt
 +++ b/changes.txt
-@@ -1,443 +0,0 @@
+@@ -1,448 +0,0 @@
 -diff --git a/changes.txt b/changes.txt
--index 1bd346c..e69de29 100644
+-index b25071a..e69de29 100644
 ---- a/changes.txt
 -+++ b/changes.txt
--@@ -1,438 +0,0 @@
---diff --git a/__pycache__/data_loader_orchestrator.cpython-36.pyc b/__pycache__/data_loader_orchestrator.cpython-36.pyc
---index 169534b..9fd3d11 100644
---Binary files a/__pycache__/data_loader_orchestrator.cpython-36.pyc and b/__pycache__/data_loader_orchestrator.cpython-36.pyc differ
---diff --git a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc
---index 743c5c8..8fc155b 100644
---Binary files a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc differ
---diff --git a/__pycache__/features.cpython-36.pyc b/__pycache__/features.cpython-36.pyc
---index 1e0c1fc..58d86e7 100644
---Binary files a/__pycache__/features.cpython-36.pyc and b/__pycache__/features.cpython-36.pyc differ
---diff --git a/data_loader_orchestrator.py b/data_loader_orchestrator.py
---index 69147a0..6fa6665 100644
------ a/data_loader_orchestrator.py
---+++ b/data_loader_orchestrator.py
---@@ -28,7 +28,8 @@ class InitialTrafficDataLoader(LoggingMixin):
---         datetime_cols=['datetime', 'date'],
---         sensor_col='sensor_id',
---         value_col='value',
----        disable_logs=False
---+        disable_logs=False,
---+        df_gman=None
---     ):
---         super().__init__(disable_logs=disable_logs)
---         self.file_path = file_path
---@@ -38,7 +39,7 @@ class InitialTrafficDataLoader(LoggingMixin):
---         self.datetime_col = None
---         self.sensor_col = sensor_col
---         self.value_col = value_col
----        self.df_gman = None
---+        self.df_gman = df_gman
---         self.first_test_timestamp = None
---         self.df_as_gman_input = None
---         self.df_as_gman_input_orig = None
---@@ -152,37 +153,109 @@ class InitialTrafficDataLoader(LoggingMixin):
---         self._log(
---             f"Applied smoothing (window={window_size}, train_only={filter_on_train_only}, use_median_instead_of_mean={use_median_instead_of_mean}).")
--- 
----    def add_gman_predictions(self):
---+    def add_gman_predictions_deprecated(self, model_prediction_col='gman_prediction', model_prediction_date_col='gman_prediction_date'):
---         self._log("Merging gman data.")
---         assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
---         self.df[self.sensor_col] = self.df[self.sensor_col].astype('category')
---         self.df_gman[self.sensor_col] = self.df_gman[self.sensor_col].astype(
---             'category')
---+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
---+            self.df_gman[model_prediction_date_col])
---+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
---+        # Limit df_gman to the datetime range of df
---+        min_date = self.df[self.datetime_col].min()
---+        max_date = self.df[self.datetime_col].max()
---+        self.df_gman = self.df_gman[
---+            (self.df_gman[model_prediction_date_col] >= min_date) &
---+            (self.df_gman[model_prediction_date_col] <= max_date)
---+        ]
---         self.df = self.df.set_index([self.datetime_col, self.sensor_col])
---         self.df_gman = self.df_gman.set_index(
----            [self.datetime_col, self.sensor_col])
---+            [model_prediction_date_col, self.sensor_col])
---         self.df = self.df.join(self.df_gman, how='left').reset_index()
----        missing_rows = self.df[self.df['gman_prediction'].isna()]
---+        missing_rows = self.df[self.df[model_prediction_col].isna()]
---         if not missing_rows.empty:
---             dropped_count = missing_rows.shape[0]
---             min_date = missing_rows[self.datetime_col].min()
---             max_date = missing_rows[self.datetime_col].max()
---             self._log(
---                 f"Dropping {dropped_count} rows with missing 'gman_prediction'. Date range: {min_date} to {max_date}.")
----            self.df = self.df.dropna(subset=['gman_prediction'])
---+            self.df = self.df.dropna(subset=[model_prediction_col])
---         else:
---             self._log("No rows dropped for missing 'gman_predictions'.")
--- 
---+    def add_gman_predictions(self,
---+                             convert_prediction_to_delta_speed=True,
---+                             model_prediction_col='gman_prediction',
---+                             model_prediction_date_col='gman_prediction_date',
---+                             keep_target_date=True):
---+        self._log("Merging gman data.")
---+        assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
---+
---+        # Ensure datetime columns are datetime
---+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
---+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
---+            self.df_gman[model_prediction_date_col])
---+
---+        # Restrict df_gman to the date range in df
---+        min_date = self.df[self.datetime_col].min()
---+        max_date = self.df[self.datetime_col].max()
---+        self.df_gman = self.df_gman[
---+            (self.df_gman[model_prediction_date_col] >= min_date) &
---+            (self.df_gman[model_prediction_date_col] <= max_date)
---+        ]
---+
---+        # Columns to keep: sensor_id, prediction_date, gman_prediction (+ optionally target_date)
---+        merge_cols = [self.sensor_col,
---+                      model_prediction_date_col, model_prediction_col]
---+        if keep_target_date and 'gman_target_date' in self.df_gman.columns:
---+            merge_cols.append('gman_target_date')
---+
---+        df_gman_trimmed = self.df_gman[merge_cols].copy()
---+
---+        # Merge using prediction_date + sensor_id as keys
---+        self.df = pd.merge(
---+            self.df,
---+            df_gman_trimmed,
---+            how='left',
---+            left_on=[self.datetime_col, self.sensor_col],
---+            right_on=[model_prediction_date_col, self.sensor_col]
---+        )
---+
---+        # Optionally drop the join key (prediction_date)
---+        if not keep_target_date:
---+            self.df.drop(columns=[model_prediction_date_col], inplace=True)
---+
---+        # Log dropped rows (missing predictions)
---+        missing_rows = self.df[self.df[model_prediction_col].isna()]
---+        if not missing_rows.empty:
---+            dropped_count = missing_rows.shape[0]
---+            min_date = missing_rows[self.datetime_col].min()
---+            max_date = missing_rows[self.datetime_col].max()
---+            self._log(f"Dropping {dropped_count} rows with missing '{model_prediction_col}'. "
---+                      f"Date range: {min_date} to {max_date}.")
---+            self.df = self.df.dropna(subset=[model_prediction_col])
---+        else:
---+            self._log("No rows dropped for missing gman predictions.")
---+
---+        if convert_prediction_to_delta_speed:
---+            model_prediction_col_orig = model_prediction_col + '_orig'
---+            self.df[model_prediction_col_orig] = self.df[model_prediction_col]
---+            self.df[model_prediction_col] = self.df[model_prediction_col] - \
---+                self.df[self.value_col]
---+
---     def get_data(self,
---                  window_size=3,
----                 filter_on_train_only=True,
---+                 filter_on_train_only=False,
---                  filter_extreme_changes=True,
---                  smooth_speeds=True,
----                 use_median_instead_of_mean=True,
---+                 use_median_instead_of_mean=False,
---                  relative_threshold=0.7,
---                  test_size=1/3,
---                  diagnose_extreme_changes=False,
----                 add_gman_predictions=False):
---+                 add_gman_predictions=False,
---+                 convert_gman_prediction_to_delta_speed=True,
---+                 ):
---         self.load_data_parquet()
---         self.align_sensors_to_common_timeframe()
---         self.add_test_set_column(test_size=test_size)
---@@ -195,7 +268,8 @@ class InitialTrafficDataLoader(LoggingMixin):
---             self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only,
---                                use_median_instead_of_mean=use_median_instead_of_mean)
---         if add_gman_predictions:
----            self.add_gman_predictions()
---+            self.add_gman_predictions(
---+                convert_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed)
---         self.df[self.value_col] = self.df[self.value_col].astype(np.float32)
---         return self.df.copy()
--- 
---diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
---index 6c004ad..7d20870 100644
------ a/data_pipeline_orchestrator.py
---+++ b/data_pipeline_orchestrator.py
---@@ -15,7 +15,7 @@ from .helper_utils import *
--- import pickle
--- import time
--- import json
----import re 
---+import re
--- # Configure logging
--- logging.basicConfig(
---     format='%(asctime)s - %(levelname)s - %(message)s',
---@@ -33,6 +33,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---         new_sensor_id_col='sensor_uid',
---         weather_cols=WEATHER_COLUMNS,
---         disable_logs=False,
---+        df_gman=None
---     ):
---         super().__init__(disable_logs=disable_logs)
---         self.file_path = file_path
---@@ -44,7 +45,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---         self.weather_cols = weather_cols
---         self.df = None
---         self.df_orig = None
----        self.df_gman = None
---+        self.df_gman = df_gman
---         self.first_test_timestamp = None
---         self.feature_log = {}  # Track added features
---         self.smoothing = None
---@@ -60,6 +61,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---         relative_threshold=0.7,
---         diagnose_extreme_changes=False,
---         add_gman_predictions=False,
---+        use_gman_target=False,
---+        convert_gman_prediction_to_delta_speed=True,
---         window_size=3,
---         spatial_adj=5,
---         normalize_by_distance=True,
---@@ -67,16 +70,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---         relative_lags=True,
---         horizon=15,
---         filter_on_train_only=True,
----        use_gman_target=False,
---         hour_start=6,
---         hour_end=19,
----        quantile_threshold=0.9, 
----        quantile_percentage=0.65, 
----        lower_bound=0.01, 
---+        quantile_threshold=0.9,
---+        quantile_percentage=0.65,
---+        lower_bound=0.01,
---         upper_bound=0.99,
---         use_median_instead_of_mean_smoothing=True,
---+        drop_weather=True
---     ):
----        
---+
---         # Determine current smoothing strategy ID
---         smoothing_id = (
---             f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
---@@ -90,8 +93,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---             sensor_col=self.sensor_col,
---             value_col=self.value_col,
---             disable_logs=self.disable_logs,
---+            df_gman=self.df_gman
---         )
----        loader.df_gman = self.df_gman
---+
---         df = loader.get_data(
---             window_size=window_size,
---             filter_on_train_only=filter_on_train_only,
---@@ -102,20 +106,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---             diagnose_extreme_changes=diagnose_extreme_changes,
---             add_gman_predictions=add_gman_predictions,
---             use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
---+            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed
---         )
---         self.df_orig = loader.df_orig
---         self.first_test_timestamp = loader.first_test_timestamp
---         self.smoothing_prev = self.smoothing
---         self.smoothing = smoothing_id
--- 
----        
----
---         # Step 2: DateTime Features
---         dt_features = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
---         df, dt_cols = dt_features.transform(df)
---         self.feature_log['datetime_features'] = dt_cols
--- 
----
---         # Step 3: Spatial Features
---         spatial = AdjacentSensorFeatureAdderOptimal(
---             sensor_dict_path=self.sensor_dict_path,
---@@ -128,7 +130,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---         )
---         self.upstream_sensor_dict = spatial.upstream_sensor_dict
---         self.downstream_sensor_dict = spatial.downstream_sensor_dict
----        df, spatial_cols = spatial.transform(df,smoothing_id, self.smoothing_prev)
---+        df, spatial_cols = spatial.transform(
---+            df, smoothing_id, self.smoothing_prev)
---         self.feature_log['spatial_features'] = spatial_cols
--- 
---         # Step 4: Temporal Lag Features
---@@ -140,24 +143,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---             sensor_col=self.sensor_col,
---             value_col=self.value_col,
---         )
----        df, lag_cols = lagger.transform(df,smoothing_id, self.smoothing_prev)
---+        df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
---         self.feature_log['lag_features'] = lag_cols
--- 
---         # Step 5: Congestion and Outlier Features
---         congestion = CongestionFeatureEngineer(hour_start=hour_start, hour_end=hour_end,
----                                                   quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage, 
----                                                   lower_bound=lower_bound, upper_bound=upper_bound)
---+                                               quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage,
---+                                               lower_bound=lower_bound, upper_bound=upper_bound)
---         df, congestion_cols = congestion.transform(df)
---         self.feature_log['congestion_features'] = congestion_cols
----        
----        
---+
---         # Step 6: Miscellaneous Features
---         misc = MiscellaneousFeatureEngineer(
---             sensor_col=self.sensor_col,
---             new_sensor_id_col=self.new_sensor_id_col,
---             weather_cols=self.weather_cols,
---         )
----        df, misc_cols = misc.transform(df)
---+        df, misc_cols = misc.transform(df, drop_weather=drop_weather)
---         self.feature_log['miscellaneous_features'] = misc_cols
--- 
---         # Step 7: Target Variable
---@@ -174,7 +176,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
--- 
---         # Store outputs
---         self.df = df
----        self.all_added_features = list(set(col for cols in self.feature_log.values() for col in cols))
---+        self.all_added_features = list(
---+            set(col for cols in self.feature_log.values() for col in cols))
--- 
---         # Train/test split
---         train_df = df[~df['test_set']].copy()
---@@ -184,16 +187,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---         y_train = train_df['target']
---         X_test = test_df.drop(columns=['target'])
---         y_test = test_df['target']
----        
----        cols_to_drop = ['sensor_id', 'target_total_speed', 'target_speed_delta','date','sensor_id','test_set']
----        
----        # Drop unwanted columns 
----        for df in [X_train,X_test]:
----            
----            df = df.drop(columns=[col for col in cols_to_drop if col in df.columns],inplace=True)
----
----  
----        
---+
---+        cols_to_drop = ['sensor_id', 'target_total_speed',
---+                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
---+
---+        # Drop unwanted columns
---+        for df in [X_train, X_test]:
---+
---+            df = df.drop(
---+                columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
---+
---         self.X_train = X_train
---         self.X_test = X_test
---         self.y_train = y_train
---@@ -204,16 +207,19 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---     def validate_target_computation(self, use_gman_target=False, horizon=15):
---         self._log("Validating target variable...")
--- 
----        df_test = self.df.copy().sort_values(by=[self.sensor_col, self.datetime_col])
---+        df_test = self.df.copy().sort_values(
---+            by=[self.sensor_col, self.datetime_col])
--- 
---         if use_gman_target:
---             df_test['expected_target'] = (
----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
---+                df_test.groupby(self.sensor_col)[
---+                    self.value_col].shift(-horizon)
---                 - df_test.groupby(self.sensor_col)['gman_prediction'].shift(-horizon)
---             )
---         else:
---             df_test['expected_target'] = (
----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
---+                df_test.groupby(self.sensor_col)[
---+                    self.value_col].shift(-horizon)
---                 - df_test[self.value_col]
---             )
--- 
---@@ -224,7 +230,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---             return True
---         else:
---             incorrect_rows = df_test[df_test['target_correct'] == False]
----            self._log(f"{len(incorrect_rows)} rows have incorrect target values.")
---+            self._log(
---+                f"{len(incorrect_rows)} rows have incorrect target values.")
---             return False
--- 
--- 
---@@ -265,7 +272,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
--- #             sensor_col=self.sensor_col,
--- #             value_col=self.value_col,
--- #             disable_logs=self.disable_logs,
----    
---+
--- #         )
--- #         loader.df_gman = self.gman_df
--- #         df = loader.get_data(add_gman_predictions=self.gman_df is not None)
---@@ -314,7 +321,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
--- #         self.X_test = df.loc[df.test_set].drop(columns=["target"])
--- #         self.y_train = df.loc[~df.test_set, "target"]
--- #         self.y_test = df.loc[df.test_set, "target"]
----        
---+
--- #         return self.X_train, self.X_test, self.y_train, self.y_test
--- 
--- #     def validate_target_variable(self):
---@@ -340,11 +347,3 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
--- #         else:
--- #             self._log("Some target values are incorrect!")
--- #             return False
----
----
----
----
----    
----    
----
----
---diff --git a/features.py b/features.py
---index 53a484a..de3e574 100644
------ a/features.py
---+++ b/features.py
---@@ -369,10 +369,11 @@ class MiscellaneousFeatureEngineer(LoggingMixin):
---         logging.info(f"Dropped columns: {dropped}")
---         return df, dropped
--- 
----    def transform(self, df):
---+    def transform(self, df,drop_weather = True):
---         """Applies all miscellaneous transformations in one step."""
---         df, id_cols = self.map_sensor_ids(df)
----        df, dropped_cols = self.drop_weather_features(df)
---+        if drop_weather:
---+            df, dropped_cols = self.drop_weather_features(df)
---         return df, id_cols + dropped_cols
--- 
--- 
---@@ -482,7 +483,7 @@ class TargetVariableCreator(LoggingMixin):
---         sensor_col='sensor_id',
---         datetime_col='date',
---         value_col='value',
----        gman_col='gman_prediction',
---+        gman_col='gman_prediction_orig',
---         use_gman=False,
---         disable_logs=False
---     ):
---@@ -503,12 +504,12 @@ class TargetVariableCreator(LoggingMixin):
---         self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
--- 
---         if self.use_gman:
----            df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
----            df['target'] = df['target_total_speed'] - df['target_gman_prediction']
---+            #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
---+            df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
--- 
----            check = df['target_total_speed'] - (df['target'] + df['target_gman_prediction'])
----            if not np.allclose(check.fillna(0), 0):
----                raise ValueError("Target variable is not a valid GMAN correction.")
---+            check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
---+            # if not np.allclose(check.fillna(0), 0):
---+            #     raise ValueError("Target variable is not a valid GMAN correction.")
--- 
---             self._log("GMAN correction target validated.")
---             used_cols = ['target_total_speed', 'target_speed_delta', 'target_gman_prediction', 'target']
+-@@ -1,443 +0,0 @@
+--diff --git a/changes.txt b/changes.txt
+--index 1bd346c..e69de29 100644
+----- a/changes.txt
+--+++ b/changes.txt
+--@@ -1,438 +0,0 @@
+---diff --git a/__pycache__/data_loader_orchestrator.cpython-36.pyc b/__pycache__/data_loader_orchestrator.cpython-36.pyc
+---index 169534b..9fd3d11 100644
+---Binary files a/__pycache__/data_loader_orchestrator.cpython-36.pyc and b/__pycache__/data_loader_orchestrator.cpython-36.pyc differ
+---diff --git a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc
+---index 743c5c8..8fc155b 100644
+---Binary files a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc differ
+---diff --git a/__pycache__/features.cpython-36.pyc b/__pycache__/features.cpython-36.pyc
+---index 1e0c1fc..58d86e7 100644
+---Binary files a/__pycache__/features.cpython-36.pyc and b/__pycache__/features.cpython-36.pyc differ
+---diff --git a/data_loader_orchestrator.py b/data_loader_orchestrator.py
+---index 69147a0..6fa6665 100644
+------ a/data_loader_orchestrator.py
+---+++ b/data_loader_orchestrator.py
+---@@ -28,7 +28,8 @@ class InitialTrafficDataLoader(LoggingMixin):
+---         datetime_cols=['datetime', 'date'],
+---         sensor_col='sensor_id',
+---         value_col='value',
+----        disable_logs=False
+---+        disable_logs=False,
+---+        df_gman=None
+---     ):
+---         super().__init__(disable_logs=disable_logs)
+---         self.file_path = file_path
+---@@ -38,7 +39,7 @@ class InitialTrafficDataLoader(LoggingMixin):
+---         self.datetime_col = None
+---         self.sensor_col = sensor_col
+---         self.value_col = value_col
+----        self.df_gman = None
+---+        self.df_gman = df_gman
+---         self.first_test_timestamp = None
+---         self.df_as_gman_input = None
+---         self.df_as_gman_input_orig = None
+---@@ -152,37 +153,109 @@ class InitialTrafficDataLoader(LoggingMixin):
+---         self._log(
+---             f"Applied smoothing (window={window_size}, train_only={filter_on_train_only}, use_median_instead_of_mean={use_median_instead_of_mean}).")
+--- 
+----    def add_gman_predictions(self):
+---+    def add_gman_predictions_deprecated(self, model_prediction_col='gman_prediction', model_prediction_date_col='gman_prediction_date'):
+---         self._log("Merging gman data.")
+---         assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
+---         self.df[self.sensor_col] = self.df[self.sensor_col].astype('category')
+---         self.df_gman[self.sensor_col] = self.df_gman[self.sensor_col].astype(
+---             'category')
+---+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
+---+            self.df_gman[model_prediction_date_col])
+---+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
+---+        # Limit df_gman to the datetime range of df
+---+        min_date = self.df[self.datetime_col].min()
+---+        max_date = self.df[self.datetime_col].max()
+---+        self.df_gman = self.df_gman[
+---+            (self.df_gman[model_prediction_date_col] >= min_date) &
+---+            (self.df_gman[model_prediction_date_col] <= max_date)
+---+        ]
+---         self.df = self.df.set_index([self.datetime_col, self.sensor_col])
+---         self.df_gman = self.df_gman.set_index(
+----            [self.datetime_col, self.sensor_col])
+---+            [model_prediction_date_col, self.sensor_col])
+---         self.df = self.df.join(self.df_gman, how='left').reset_index()
+----        missing_rows = self.df[self.df['gman_prediction'].isna()]
+---+        missing_rows = self.df[self.df[model_prediction_col].isna()]
+---         if not missing_rows.empty:
+---             dropped_count = missing_rows.shape[0]
+---             min_date = missing_rows[self.datetime_col].min()
+---             max_date = missing_rows[self.datetime_col].max()
+---             self._log(
+---                 f"Dropping {dropped_count} rows with missing 'gman_prediction'. Date range: {min_date} to {max_date}.")
+----            self.df = self.df.dropna(subset=['gman_prediction'])
+---+            self.df = self.df.dropna(subset=[model_prediction_col])
+---         else:
+---             self._log("No rows dropped for missing 'gman_predictions'.")
+--- 
+---+    def add_gman_predictions(self,
+---+                             convert_prediction_to_delta_speed=True,
+---+                             model_prediction_col='gman_prediction',
+---+                             model_prediction_date_col='gman_prediction_date',
+---+                             keep_target_date=True):
+---+        self._log("Merging gman data.")
+---+        assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
+---+
+---+        # Ensure datetime columns are datetime
+---+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
+---+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
+---+            self.df_gman[model_prediction_date_col])
+---+
+---+        # Restrict df_gman to the date range in df
+---+        min_date = self.df[self.datetime_col].min()
+---+        max_date = self.df[self.datetime_col].max()
+---+        self.df_gman = self.df_gman[
+---+            (self.df_gman[model_prediction_date_col] >= min_date) &
+---+            (self.df_gman[model_prediction_date_col] <= max_date)
+---+        ]
+---+
+---+        # Columns to keep: sensor_id, prediction_date, gman_prediction (+ optionally target_date)
+---+        merge_cols = [self.sensor_col,
+---+                      model_prediction_date_col, model_prediction_col]
+---+        if keep_target_date and 'gman_target_date' in self.df_gman.columns:
+---+            merge_cols.append('gman_target_date')
+---+
+---+        df_gman_trimmed = self.df_gman[merge_cols].copy()
+---+
+---+        # Merge using prediction_date + sensor_id as keys
+---+        self.df = pd.merge(
+---+            self.df,
+---+            df_gman_trimmed,
+---+            how='left',
+---+            left_on=[self.datetime_col, self.sensor_col],
+---+            right_on=[model_prediction_date_col, self.sensor_col]
+---+        )
+---+
+---+        # Optionally drop the join key (prediction_date)
+---+        if not keep_target_date:
+---+            self.df.drop(columns=[model_prediction_date_col], inplace=True)
+---+
+---+        # Log dropped rows (missing predictions)
+---+        missing_rows = self.df[self.df[model_prediction_col].isna()]
+---+        if not missing_rows.empty:
+---+            dropped_count = missing_rows.shape[0]
+---+            min_date = missing_rows[self.datetime_col].min()
+---+            max_date = missing_rows[self.datetime_col].max()
+---+            self._log(f"Dropping {dropped_count} rows with missing '{model_prediction_col}'. "
+---+                      f"Date range: {min_date} to {max_date}.")
+---+            self.df = self.df.dropna(subset=[model_prediction_col])
+---+        else:
+---+            self._log("No rows dropped for missing gman predictions.")
+---+
+---+        if convert_prediction_to_delta_speed:
+---+            model_prediction_col_orig = model_prediction_col + '_orig'
+---+            self.df[model_prediction_col_orig] = self.df[model_prediction_col]
+---+            self.df[model_prediction_col] = self.df[model_prediction_col] - \
+---+                self.df[self.value_col]
+---+
+---     def get_data(self,
+---                  window_size=3,
+----                 filter_on_train_only=True,
+---+                 filter_on_train_only=False,
+---                  filter_extreme_changes=True,
+---                  smooth_speeds=True,
+----                 use_median_instead_of_mean=True,
+---+                 use_median_instead_of_mean=False,
+---                  relative_threshold=0.7,
+---                  test_size=1/3,
+---                  diagnose_extreme_changes=False,
+----                 add_gman_predictions=False):
+---+                 add_gman_predictions=False,
+---+                 convert_gman_prediction_to_delta_speed=True,
+---+                 ):
+---         self.load_data_parquet()
+---         self.align_sensors_to_common_timeframe()
+---         self.add_test_set_column(test_size=test_size)
+---@@ -195,7 +268,8 @@ class InitialTrafficDataLoader(LoggingMixin):
+---             self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only,
+---                                use_median_instead_of_mean=use_median_instead_of_mean)
+---         if add_gman_predictions:
+----            self.add_gman_predictions()
+---+            self.add_gman_predictions(
+---+                convert_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed)
+---         self.df[self.value_col] = self.df[self.value_col].astype(np.float32)
+---         return self.df.copy()
+--- 
+---diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
+---index 6c004ad..7d20870 100644
+------ a/data_pipeline_orchestrator.py
+---+++ b/data_pipeline_orchestrator.py
+---@@ -15,7 +15,7 @@ from .helper_utils import *
+--- import pickle
+--- import time
+--- import json
+----import re 
+---+import re
+--- # Configure logging
+--- logging.basicConfig(
+---     format='%(asctime)s - %(levelname)s - %(message)s',
+---@@ -33,6 +33,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---         new_sensor_id_col='sensor_uid',
+---         weather_cols=WEATHER_COLUMNS,
+---         disable_logs=False,
+---+        df_gman=None
+---     ):
+---         super().__init__(disable_logs=disable_logs)
+---         self.file_path = file_path
+---@@ -44,7 +45,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---         self.weather_cols = weather_cols
+---         self.df = None
+---         self.df_orig = None
+----        self.df_gman = None
+---+        self.df_gman = df_gman
+---         self.first_test_timestamp = None
+---         self.feature_log = {}  # Track added features
+---         self.smoothing = None
+---@@ -60,6 +61,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---         relative_threshold=0.7,
+---         diagnose_extreme_changes=False,
+---         add_gman_predictions=False,
+---+        use_gman_target=False,
+---+        convert_gman_prediction_to_delta_speed=True,
+---         window_size=3,
+---         spatial_adj=5,
+---         normalize_by_distance=True,
+---@@ -67,16 +70,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---         relative_lags=True,
+---         horizon=15,
+---         filter_on_train_only=True,
+----        use_gman_target=False,
+---         hour_start=6,
+---         hour_end=19,
+----        quantile_threshold=0.9, 
+----        quantile_percentage=0.65, 
+----        lower_bound=0.01, 
+---+        quantile_threshold=0.9,
+---+        quantile_percentage=0.65,
+---+        lower_bound=0.01,
+---         upper_bound=0.99,
+---         use_median_instead_of_mean_smoothing=True,
+---+        drop_weather=True
+---     ):
+----        
+---+
+---         # Determine current smoothing strategy ID
+---         smoothing_id = (
+---             f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
+---@@ -90,8 +93,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---             sensor_col=self.sensor_col,
+---             value_col=self.value_col,
+---             disable_logs=self.disable_logs,
+---+            df_gman=self.df_gman
+---         )
+----        loader.df_gman = self.df_gman
+---+
+---         df = loader.get_data(
+---             window_size=window_size,
+---             filter_on_train_only=filter_on_train_only,
+---@@ -102,20 +106,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---             diagnose_extreme_changes=diagnose_extreme_changes,
+---             add_gman_predictions=add_gman_predictions,
+---             use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
+---+            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed
+---         )
+---         self.df_orig = loader.df_orig
+---         self.first_test_timestamp = loader.first_test_timestamp
+---         self.smoothing_prev = self.smoothing
+---         self.smoothing = smoothing_id
+--- 
+----        
+----
+---         # Step 2: DateTime Features
+---         dt_features = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
+---         df, dt_cols = dt_features.transform(df)
+---         self.feature_log['datetime_features'] = dt_cols
+--- 
+----
+---         # Step 3: Spatial Features
+---         spatial = AdjacentSensorFeatureAdderOptimal(
+---             sensor_dict_path=self.sensor_dict_path,
+---@@ -128,7 +130,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---         )
+---         self.upstream_sensor_dict = spatial.upstream_sensor_dict
+---         self.downstream_sensor_dict = spatial.downstream_sensor_dict
+----        df, spatial_cols = spatial.transform(df,smoothing_id, self.smoothing_prev)
+---+        df, spatial_cols = spatial.transform(
+---+            df, smoothing_id, self.smoothing_prev)
+---         self.feature_log['spatial_features'] = spatial_cols
+--- 
+---         # Step 4: Temporal Lag Features
+---@@ -140,24 +143,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---             sensor_col=self.sensor_col,
+---             value_col=self.value_col,
+---         )
+----        df, lag_cols = lagger.transform(df,smoothing_id, self.smoothing_prev)
+---+        df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
+---         self.feature_log['lag_features'] = lag_cols
+--- 
+---         # Step 5: Congestion and Outlier Features
+---         congestion = CongestionFeatureEngineer(hour_start=hour_start, hour_end=hour_end,
+----                                                   quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage, 
+----                                                   lower_bound=lower_bound, upper_bound=upper_bound)
+---+                                               quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage,
+---+                                               lower_bound=lower_bound, upper_bound=upper_bound)
+---         df, congestion_cols = congestion.transform(df)
+---         self.feature_log['congestion_features'] = congestion_cols
+----        
+----        
+---+
+---         # Step 6: Miscellaneous Features
+---         misc = MiscellaneousFeatureEngineer(
+---             sensor_col=self.sensor_col,
+---             new_sensor_id_col=self.new_sensor_id_col,
+---             weather_cols=self.weather_cols,
+---         )
+----        df, misc_cols = misc.transform(df)
+---+        df, misc_cols = misc.transform(df, drop_weather=drop_weather)
+---         self.feature_log['miscellaneous_features'] = misc_cols
+--- 
+---         # Step 7: Target Variable
+---@@ -174,7 +176,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+--- 
+---         # Store outputs
+---         self.df = df
+----        self.all_added_features = list(set(col for cols in self.feature_log.values() for col in cols))
+---+        self.all_added_features = list(
+---+            set(col for cols in self.feature_log.values() for col in cols))
+--- 
+---         # Train/test split
+---         train_df = df[~df['test_set']].copy()
+---@@ -184,16 +187,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---         y_train = train_df['target']
+---         X_test = test_df.drop(columns=['target'])
+---         y_test = test_df['target']
+----        
+----        cols_to_drop = ['sensor_id', 'target_total_speed', 'target_speed_delta','date','sensor_id','test_set']
+----        
+----        # Drop unwanted columns 
+----        for df in [X_train,X_test]:
+----            
+----            df = df.drop(columns=[col for col in cols_to_drop if col in df.columns],inplace=True)
+----
+----  
+----        
+---+
+---+        cols_to_drop = ['sensor_id', 'target_total_speed',
+---+                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
+---+
+---+        # Drop unwanted columns
+---+        for df in [X_train, X_test]:
+---+
+---+            df = df.drop(
+---+                columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
+---+
+---         self.X_train = X_train
+---         self.X_test = X_test
+---         self.y_train = y_train
+---@@ -204,16 +207,19 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---     def validate_target_computation(self, use_gman_target=False, horizon=15):
+---         self._log("Validating target variable...")
+--- 
+----        df_test = self.df.copy().sort_values(by=[self.sensor_col, self.datetime_col])
+---+        df_test = self.df.copy().sort_values(
+---+            by=[self.sensor_col, self.datetime_col])
+--- 
+---         if use_gman_target:
+---             df_test['expected_target'] = (
+----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
+---+                df_test.groupby(self.sensor_col)[
+---+                    self.value_col].shift(-horizon)
+---                 - df_test.groupby(self.sensor_col)['gman_prediction'].shift(-horizon)
+---             )
+---         else:
+---             df_test['expected_target'] = (
+----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
+---+                df_test.groupby(self.sensor_col)[
+---+                    self.value_col].shift(-horizon)
+---                 - df_test[self.value_col]
+---             )
+--- 
+---@@ -224,7 +230,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---             return True
+---         else:
+---             incorrect_rows = df_test[df_test['target_correct'] == False]
+----            self._log(f"{len(incorrect_rows)} rows have incorrect target values.")
+---+            self._log(
+---+                f"{len(incorrect_rows)} rows have incorrect target values.")
+---             return False
+--- 
+--- 
+---@@ -265,7 +272,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+--- #             sensor_col=self.sensor_col,
+--- #             value_col=self.value_col,
+--- #             disable_logs=self.disable_logs,
+----    
+---+
+--- #         )
+--- #         loader.df_gman = self.gman_df
+--- #         df = loader.get_data(add_gman_predictions=self.gman_df is not None)
+---@@ -314,7 +321,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+--- #         self.X_test = df.loc[df.test_set].drop(columns=["target"])
+--- #         self.y_train = df.loc[~df.test_set, "target"]
+--- #         self.y_test = df.loc[df.test_set, "target"]
+----        
+---+
+--- #         return self.X_train, self.X_test, self.y_train, self.y_test
+--- 
+--- #     def validate_target_variable(self):
+---@@ -340,11 +347,3 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+--- #         else:
+--- #             self._log("Some target values are incorrect!")
+--- #             return False
+----
+----
+----
+----
+----    
+----    
+----
+----
+---diff --git a/features.py b/features.py
+---index 53a484a..de3e574 100644
+------ a/features.py
+---+++ b/features.py
+---@@ -369,10 +369,11 @@ class MiscellaneousFeatureEngineer(LoggingMixin):
+---         logging.info(f"Dropped columns: {dropped}")
+---         return df, dropped
+--- 
+----    def transform(self, df):
+---+    def transform(self, df,drop_weather = True):
+---         """Applies all miscellaneous transformations in one step."""
+---         df, id_cols = self.map_sensor_ids(df)
+----        df, dropped_cols = self.drop_weather_features(df)
+---+        if drop_weather:
+---+            df, dropped_cols = self.drop_weather_features(df)
+---         return df, id_cols + dropped_cols
+--- 
+--- 
+---@@ -482,7 +483,7 @@ class TargetVariableCreator(LoggingMixin):
+---         sensor_col='sensor_id',
+---         datetime_col='date',
+---         value_col='value',
+----        gman_col='gman_prediction',
+---+        gman_col='gman_prediction_orig',
+---         use_gman=False,
+---         disable_logs=False
+---     ):
+---@@ -503,12 +504,12 @@ class TargetVariableCreator(LoggingMixin):
+---         self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
+--- 
+---         if self.use_gman:
+----            df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
+----            df['target'] = df['target_total_speed'] - df['target_gman_prediction']
+---+            #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
+---+            df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
+--- 
+----            check = df['target_total_speed'] - (df['target'] + df['target_gman_prediction'])
+----            if not np.allclose(check.fillna(0), 0):
+----                raise ValueError("Target variable is not a valid GMAN correction.")
+---+            check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
+---+            # if not np.allclose(check.fillna(0), 0):
+---+            #     raise ValueError("Target variable is not a valid GMAN correction.")
+--- 
+---             self._log("GMAN correction target validated.")
+---             used_cols = ['target_total_speed', 'target_speed_delta', 'target_gman_prediction', 'target']
+diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
+index a27ea44..37776e7 100644
+--- a/data_pipeline_orchestrator.py
++++ b/data_pipeline_orchestrator.py
+@@ -198,6 +198,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+ 
+         # Store outputs
+         self.df = df
++        self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
+         self.all_added_features = list(
+             set(col for cols in self.feature_log.values() for col in cols))
+ 
+@@ -211,7 +212,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         y_test = test_df['target']
+ 
+         cols_to_drop = ['sensor_id', 'target_total_speed',
+-                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
++                        'target_speed_delta', 'date', 'sensor_id', 
++                        'test_set', 'gman_prediction_date', 'gman_target_date','date_of_prediction']
+ 
+         # Drop unwanted columns
+         for df in [X_train, X_test]:
+diff --git a/model_comparison.py b/model_comparison.py
+index ae03d72..04cc667 100644
+--- a/model_comparison.py
++++ b/model_comparison.py
+@@ -229,6 +229,8 @@ class ModelEvaluator:
+         """
+         # Calculate prediction errors
+         errors = self.y_test - y_pred
++        self.errors_delta_speed = errors
++        self.errors_absolute_speed = self.y_test - self.y_pred_before_reconstruction
+         abs_errors = np.abs(errors)
+ 
+         # Standard error metrics
+diff --git a/post_processing.py b/post_processing.py
+index 5ce6201..5ac0179 100644
+--- a/post_processing.py
++++ b/post_processing.py
+@@ -318,7 +318,7 @@ class PredictionCorrectionPerSensor:
+         - smoothed_y_pred: np.ndarray - Smoothed predictions.
+         """
+         y_pred = self._align_predictions_to_sensor(y_pred)
+-        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=True, min_periods=1).median().values
++        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=False, min_periods=1).median().values
+ 
+         if self.rounding is not None:
+             smoothed_y_pred = np.round(smoothed_y_pred, self.rounding)
