@@ -254,8 +254,8 @@ class PredictionCorrectionPerSensor:
             raise ValueError("Indices of y_test do not align with X_test.")
         self.y_test = y_test.loc[sensor_idx]
         if df_for_ML is not None:
-            self.df_for_ML = df_for_ML.loc[sensor_idx]
-            self.train_values = self.df_for_ML.loc[~self.df_for_ML['test_set'], 'value'].values
+            self.df_for_ML = df_for_ML.loc[df_for_ML['sensor_uid'] == sensor_uid]
+            self.train_values = self.df_for_ML.loc[~self.df_for_ML['test_set'], 'value']
         else:
             self.df_for_ML = None
             self.train_values = None
@@ -304,7 +304,8 @@ class PredictionCorrectionPerSensor:
         if self.rounding is not None:
             corrected_y_pred = np.round(corrected_y_pred, self.rounding)
 
-        return corrected_y_pred
+        return pd.Series(corrected_y_pred, index=self.X_test_sensor.index)
+
 
     def rolling_median_correction(self, y_pred, window_size=3):
         """
@@ -323,7 +324,8 @@ class PredictionCorrectionPerSensor:
         if self.rounding is not None:
             smoothed_y_pred = np.round(smoothed_y_pred, self.rounding)
 
-        return smoothed_y_pred
+        return pd.Series(smoothed_y_pred, index=self.X_test_sensor.index)
+
 
     def ewma_smoothing(self, y_pred, span=3):
         """
@@ -343,7 +345,7 @@ class PredictionCorrectionPerSensor:
         if self.rounding is not None:
             smoothed_y_pred = np.round(smoothed_y_pred, self.rounding)
 
-        return smoothed_y_pred
+        return pd.Series(smoothed_y_pred, index=self.X_test_sensor.index)
 
     def constrain_predictions(self, y_pred, min_speed=None, max_speed=None):
         """
@@ -369,35 +371,55 @@ class PredictionCorrectionPerSensor:
         if self.rounding is not None:
             constrained_y_pred = np.round(constrained_y_pred, self.rounding)
 
-        return constrained_y_pred
+        return pd.Series(constrained_y_pred, index=self.X_test_sensor.index)
+
     
     
-    def kalman_smoothing(self, y_pred):
+    def kalman_smoothing(self, y_pred, Q: float = 1.0, R: Optional[float] = None, handle_nans: bool = True):
         """
         Apply Kalman filter smoothing to predictions.
 
-        Parameters:
-        - y_pred: np.ndarray - Predicted reconstructed speed values.
+        Parameters
+        ----------
+        y_pred : pd.Series or np.ndarray
+            Predicted reconstructed speed values.
+        Q : float, optional (default=1.0)
+            Process (transition) noise covariance. Higher values allow faster changes.
+        R : float, optional
+            Observation (measurement) noise covariance. If None, uses variance of train values.
+        handle_nans : bool, optional (default=True)
+            If True, fills NaNs in y_pred using forward/backward fill.
 
-        Returns:
-        - smoothed_y_pred: np.ndarray - Kalman-filtered predictions.
+        Returns
+        -------
+        pd.Series
+            Smoothed predictions using Kalman filter.
         """
+        y_pred = self._align_predictions_to_sensor(y_pred)
+
+        # Handle missing values
+        if handle_nans:
+            y_pred = pd.Series(y_pred).fillna(method='ffill').fillna(method='bfill')
+        else:
+            if np.any(pd.isna(y_pred)) or np.any(np.isinf(y_pred)):
+                raise ValueError("y_pred contains NaNs or infs. Set handle_nans=True to auto-fill.")
+
         if self.train_values is None:
             raise ValueError("df_for_ML was not provided or contains no training data.")
-        
-        # Estimate initial parameters from training data
-        
+
+        # Estimate noise parameters
+        observation_covariance = R if R is not None else np.var(self.train_values)
         initial_state_mean = np.mean(self.train_values)
         initial_state_covariance = np.var(self.train_values)
 
-        # Define Kalman filter
+        # Build Kalman filter
         kf = KalmanFilter(
             initial_state_mean=initial_state_mean,
             initial_state_covariance=initial_state_covariance,
-            transition_matrices=[1],  # assumes next state is similar to current
+            transition_matrices=[1],
             observation_matrices=[1],
-            observation_covariance=np.var(self.train_values),  # measurement noise
-            transition_covariance=0.01  # small transition noise
+            observation_covariance=observation_covariance,
+            transition_covariance=Q
         )
 
         smoothed_y_pred, _ = kf.smooth(y_pred)
@@ -405,20 +427,21 @@ class PredictionCorrectionPerSensor:
         if self.rounding is not None:
             smoothed_y_pred = np.round(smoothed_y_pred.flatten(), self.rounding)
 
-        return smoothed_y_pred
+        return pd.Series(smoothed_y_pred.flatten(), index=self.X_test_sensor.index)
+
 
     def apply_all_corrections(self, y_pred, naive_threshold=0.5, rolling_window=3, ewma_span=3):
         """
         Apply all corrections sequentially: naive-based, rolling median, EWMA, and constraints.
 
         Parameters:
-        - y_pred: np.ndarray - Initial predictions to correct.
+        - y_pred: pd.Series or np.ndarray - Initial predictions to correct.
         - naive_threshold: float - Threshold for naive-based correction.
         - rolling_window: int - Window size for rolling median.
         - ewma_span: int - Span parameter for EWMA smoothing.
 
         Returns:
-        - y_pred_final: np.ndarray - Predictions after all corrections.
+        - y_pred_final: pd.Series - Predictions after all corrections.
         """
         y_pred_corrected = self.naive_based_correction(y_pred, naive_threshold)
         y_pred_corrected = self.rolling_median_correction(y_pred_corrected, window_size=rolling_window)
@@ -426,6 +449,5 @@ class PredictionCorrectionPerSensor:
         y_pred_final = self.constrain_predictions(y_pred_corrected)
 
         return y_pred_final
-
     
     
