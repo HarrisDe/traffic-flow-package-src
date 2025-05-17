@@ -72,6 +72,7 @@ class ModelEvaluator:
         #             "y_test must be provided if y_is_normalized is False")
         #     self.y_test = y_test
         self.y_test = y_test
+        self.df_for_ML_orig = df_for_ML
         self.df_for_ML = df_for_ML[df_for_ML['test_set']]
         self.y_test_before_reconstruction = y_test.copy()
         self.y_test = self.reconstruct_y(self.y_test)
