@@ -12,7 +12,7 @@ import os
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class SensorPredictionPlotter_:
+class SensorPredictionPlotter:
     """
     A class to visualize model predictions for traffic sensors, including their
     upstream and downstream neighbors.

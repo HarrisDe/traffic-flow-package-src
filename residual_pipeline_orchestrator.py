@@ -17,6 +17,7 @@ class ResidualTrafficPipelineOrchestrator(LoggingMixin):
         df,
         y_pred_speed_delta=None,
         disable_logs=False,
+        date_col = 'date'
     ):
         super().__init__(disable_logs=disable_logs)
         self._log("Initializing ResidualTrafficPipelineOrchestrator...")
@@ -25,8 +26,11 @@ class ResidualTrafficPipelineOrchestrator(LoggingMixin):
         self.y_pred_total_speed = y_pred_total_speed
         self.y_pred_speed_delta = y_pred_speed_delta
         self.y_true_total_speed = y_true_total_speed
+        self.date_col = date_col
+        df = df.sort_values(by=self.date_col)
         self.df_orig = df.copy()
         self.df = df.loc[X_test.index]
+        self.df.sort_values(by=self.date_col,inplace=True)
         if 'test_set' in self.df.columns:
             df.drop(columns=['test_set'],inplace=True)
 
