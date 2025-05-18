@@ -51,18 +51,26 @@ class ResidualModelEvaluator(LoggingMixin):
             'MAPE': mape * 100,
             'MAPE_std': mape_std * 100
         }
-
-    def evaluate(self, model_path):
+        
+    
+    def get_predictions(self,model_path):
+        
         model = self.load_model(model_path)
         y_pred_residual = model.predict(self.X_test)
+        y_pred_total_speed = self.main_model_pred_total_speed + y_pred_residual
+        
+        return y_pred_total_speed, y_pred_residual
 
+    def evaluate(self, model_path):
+
+        
         self._log("Evaluating residual model performance...")
+        y_pred_total_speed_w_residual, y_pred_residual = self.get_predictions(model_path)
         residual_metrics = self.compute_metrics(self.y_test, y_pred_residual)
 
         self._log("Evaluating total (corrected) prediction performance...")
-        corrected_total_speed = self.main_model_pred_total_speed + y_pred_residual
         true_total_speed = self.df_for_ML['target_total_speed']
-        total_metrics = self.compute_metrics(true_total_speed, corrected_total_speed)
+        total_metrics = self.compute_metrics(true_total_speed,  y_pred_total_speed_w_residual)
         self.print_evaluation_results(residual_metrics,total_metrics)
 
         return residual_metrics, total_metrics

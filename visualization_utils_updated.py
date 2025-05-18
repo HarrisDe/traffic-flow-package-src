@@ -12,7 +12,7 @@ import os
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class SensorPredictionPlotter_:
+class SensorPredictionPlotter:
     """
     A class to visualize model predictions for traffic sensors, including their
     upstream and downstream neighbors.
@@ -21,12 +21,13 @@ class SensorPredictionPlotter_:
     an injected factory or defaulting to naive-based correction.
     Also caches correction objects per sensor for efficiency.
     """
-
     def __init__(self,
                  X_test: pd.DataFrame,
                  df_for_ML: pd.DataFrame,
                  y_test: pd.Series,
                  y_pred: pd.Series,
+                 y_pred_residual: Optional[pd.Series] = None,
+                 show_residual_pred: bool = True,
                  upstream_dict: Optional[UpDownDict] = None,
                  downstream_dict: Optional[UpDownDict] = None,
                  correction_factory: Optional[Callable[[int], PredictionCorrectionPerSensor]] = None):
@@ -34,6 +35,8 @@ class SensorPredictionPlotter_:
         self.df_for_ML = df_for_ML
         self.y_test = y_test
         self.y_pred = y_pred
+        self.y_pred_residual = y_pred_residual
+        self.show_residual_pred = show_residual_pred
 
         if upstream_dict is None or downstream_dict is None:
             self.upstream_dict, self.downstream_dict = load_adjacency_dicts()
@@ -43,6 +46,8 @@ class SensorPredictionPlotter_:
 
         self._correction_factory = correction_factory or self._default_correction_factory
         self._corr_cache: Dict[int, PredictionCorrectionPerSensor] = {}
+
+
 
     def clear_cache(self) -> None:
         self._corr_cache.clear()
