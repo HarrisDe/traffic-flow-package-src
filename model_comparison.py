@@ -151,6 +151,7 @@ class ModelEvaluator:
                 f'Mean of y_pred de-NORMALIZED is: {round(np.mean(y_pred),2)} kph of delta speed')
         self.y_pred_before_reconstruction = y_pred.copy()
         y_pred = self.reconstruct_y(y_pred)
+        self.y_pred = y_pred
         #print(f'Mean of y_pred AFTER RECONSTRUCTION is: {round(np.mean(y_pred),2)} kph of total speed')
 
         return y_pred, self.y_pred_before_reconstruction
