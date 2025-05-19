@@ -12,7 +12,7 @@ import os
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class SensorPredictionPlotter:
+class SensorPredictionPlotterResidualCorrection:
     def __init__(
         self,
         X_test: pd.DataFrame,

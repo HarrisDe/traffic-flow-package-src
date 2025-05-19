@@ -7,7 +7,8 @@ from .helper_utils import *
 from .model_tuning import *
 from .model_comparison import *  #Need to fix this import by using data_pipeline_orchestrator instead of TrafficFlowDataProcessing
 from .post_processing import *
-from .visualization_utils_updated import *
+from .visualization_utils_with_residual_model import *
+from .visualization_utils import *
 from .residual_pipeline_orchestrator import *
 from .residual_model_comparison import *
 
