@@ -75,6 +75,31 @@ class ResidualModelEvaluator(LoggingMixin):
 
         return residual_metrics, total_metrics
     
+    
+    def evaluate_with_threshold(self, model_path, threshold=3.0):
+        """
+        Evaluate the residual correction only where |residual prediction| > threshold.
+        """
+        self._log(f"Evaluating with residual correction threshold: {threshold:.2f} kph")
+        model = self.load_model(model_path)
+        y_pred_residual = model.predict(self.X_test)
+
+        mask = np.abs(y_pred_residual) > threshold
+        self._log(f"Correction will be applied to {np.sum(mask)} out of {len(mask)} samples.")
+
+        corrected = self.main_model_pred_total_speed.copy()
+        corrected[mask] += y_pred_residual[mask]
+
+        true_total_speed = self.df_for_ML['target_total_speed']
+        total_metrics = self.compute_metrics(true_total_speed, corrected)
+
+        # Only compute residual metrics on the corrected subset
+        residual_metrics = self.compute_metrics(self.y_test[mask], y_pred_residual[mask]) if np.any(mask) else {}
+
+        self.print_evaluation_results(residual_metrics, total_metrics)
+        return residual_metrics, total_metrics
+    
+    
     def print_evaluation_results(self, residual_metrics, total_metrics):
         """
         Print evaluation results in a structured format similar to the original ModelEvaluator.
