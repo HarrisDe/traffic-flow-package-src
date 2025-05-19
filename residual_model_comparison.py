@@ -19,11 +19,48 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 class ResidualModelEvaluator(LoggingMixin):
     def __init__(self, X_test, y_test, df_for_ML, disable_logs=False):
         super().__init__(disable_logs=disable_logs)
-        self.X_test = X_test
-        self.y_test = y_test  # residual target
-        self.df_for_ML = df_for_ML.loc[df_for_ML['test_set']].copy()
-        self.main_model_pred_total_speed = self.df_for_ML['main_model_prediction']
+        self._log("Initializing ResidualModelEvaluator...")
+        
+        self.X_test = X_test.copy()
+        self.y_test = y_test
+        self.df_for_ML_raw = df_for_ML.copy()  # Keep original in case needed
+        self.main_model_pred_total_speed = None  # Will be set in _align_inputs
 
+        self._align_inputs()
+
+    def _align_inputs(self):
+        """
+        Align y_test and df_for_ML to the index of X_test.
+        Raises warning if 'test_set' column is not found.
+        """
+        # Align y_test
+        if isinstance(self.y_test, (pd.Series, pd.DataFrame)):
+            self.y_test = pd.Series(self.y_test, index=self.y_test.index).loc[self.X_test.index]
+        else:
+            raise ValueError("y_test must be a pandas Series or DataFrame with a proper index.")
+
+        df = self.df_for_ML_raw.copy()
+
+        # Filter to test set if available
+        if 'test_set' in df.columns:
+            df = df[df['test_set']]
+            self._log(f"'test_set' column found. Using only test rows: {len(df)} remaining.")
+        else:
+            warnings.warn("No 'test_set' column found in df_for_ML. Assuming it already contains only test samples.")
+            self._log("Warning: No 'test_set' column found. Using df_for_ML as-is.")
+
+        # Align df to X_test
+        df = df.loc[df.index.intersection(self.X_test.index)].copy()
+        df = df.loc[self.X_test.index]
+
+        if not df.index.equals(self.X_test.index):
+            raise ValueError("Final index mismatch: df_for_ML and X_test must have identical indices.")
+
+        self.df_for_ML = df
+        self.main_model_pred_total_speed = df['main_model_prediction']
+        self._log(f"Successfully aligned df_for_ML to {len(df)} rows.")
+
+    
     def load_model(self, model_path):
         with open(model_path, 'rb') as f:
             return pickle.load(f)
