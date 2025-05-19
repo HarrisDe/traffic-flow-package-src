@@ -11,6 +11,7 @@ from .post_processing import PredictionCorrection
 import seaborn as sns
 sns.set_style('darkgrid')
 import warnings
+import pandas as pd
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
