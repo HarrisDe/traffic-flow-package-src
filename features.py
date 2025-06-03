@@ -22,94 +22,7 @@ logging.basicConfig(
 )
 
 
-
-
-class AdjacentSensorFeatureAdder(LoggingMixin):
-    def __init__(self,
-                 sensor_dict_path='../data',
-                 spatial_adj=5,
-                 normalize_by_distance=True,
-                 datetime_col='datetime',
-                 value_col='value',
-                 sensor_col='sensor_id',
-                 fill_nans_value=-1,
-                 disable_logs=False):
-        super().__init__(disable_logs)
-        self.sensor_dict_path = sensor_dict_path
-        self.downstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'downstream_dict.json')))
-        self.upstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'upstream_dict.json')))
-        self.spatial_adj = spatial_adj
-        self.normalize_by_distance = normalize_by_distance
-        self.fill_nans_value = fill_nans_value
-        self.datetime_col = datetime_col
-        self.value_col = value_col
-        self.sensor_col = sensor_col
-        self.new_columns = []
-
-    def transform(self, df, current_smoothing=None, prev_smoothing=None):
-        self._log("Adding adjacent sensor features.")
         
-        if self.spatial_adj < 1:
-            self._log("No adjacent sensors to add. Skipping.")
-            return df, []
-    
-        
-        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
-        sensors = df[self.sensor_col].unique()
-        
-        
-        # Drop any excess previously computed adjacent features
-        for direction in ['upstream', 'downstream']:
-            existing_cols = [col for col in df.columns if col.startswith(f'{direction}_sensor_') and not col.endswith('_id')]
-            expected_cols = [f'{direction}_sensor_{i+1}' for i in range(self.spatial_adj)]
-            to_drop = list(set(existing_cols) - set(expected_cols))
-            if to_drop:
-                df.drop(columns=to_drop, inplace=True)
-                self._log(f"Dropped excess {direction} columns: {to_drop}")
-
-        for i in range(self.spatial_adj):
-            down_col, up_col = f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}'
-            if down_col in df.columns and up_col in df.columns and current_smoothing == prev_smoothing:
-                self._log(f"Skipping {down_col} and {up_col}, they already exist in the df (max value of downstream: {df[down_col].max()}).")
-                self.new_columns += [down_col, up_col]
-                continue
-            down_map, down_dist = {}, {}
-            up_map, up_dist = {}, {}
-
-            for s in sensors:
-                ds = self.downstream_sensor_dict.get(s, {})
-                us = self.upstream_sensor_dict.get(s, {})
-
-                down_map[s] = ds.get('downstream_sensor', [None]*self.spatial_adj)[i]
-                down_dist[s] = ds.get('downstream_distance', [np.nan]*self.spatial_adj)[i]
-                up_map[s] = us.get('upstream_sensor', [None]*self.spatial_adj)[i]
-                up_dist[s] = us.get('upstream_distance', [np.nan]*self.spatial_adj)[i]
-
-            df[f'{down_col}_id'] = df[self.sensor_col].map(down_map)
-            df[f'{up_col}_id'] = df[self.sensor_col].map(up_map)
-
-            def safe_lookup(date, sid):
-                try:
-                    return np.nan if pd.isna(sid) else pivot.at[date, sid]
-                except KeyError:
-                    return np.nan
-
-            df[down_col] = [safe_lookup(d, s) for d, s in zip(df[self.datetime_col], df[f'{down_col}_id'])]
-            df[up_col] = [safe_lookup(d, s) for d, s in zip(df[self.datetime_col], df[f'{up_col}_id'])]
-
-            if self.normalize_by_distance:
-                df[down_col] = df[down_col] / 3.6 / df[self.sensor_col].map(down_dist)
-                df[up_col] = df[up_col] / 3.6 / df[self.sensor_col].map(up_dist)
-
-            df.drop(columns=[f'{down_col}_id', f'{up_col}_id'], inplace=True)
-            df[down_col].fillna(self.fill_nans_value, inplace=True)
-            df[up_col].fillna(self.fill_nans_value, inplace=True)
-            self.new_columns += [down_col, up_col]
-            self._log(f"Added {down_col}, {up_col}")
-
-        return df, self.new_columns
-    
-    
 class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
     def __init__(self,
                  sensor_dict_path='../data',
@@ -215,98 +128,6 @@ class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
 
         return df, self.new_columns
 
-# class AdjacentSensorFeatureAdder(LoggingMixin):
-#     def __init__(self,
-#                  sensor_dict_path='../data',
-#                  spatial_adj=5,
-#                  normalize_by_distance=True,
-#                  datetime_col='datetime',
-#                  value_col='value',
-#                  sensor_col='sensor_id',
-#                  fill_nans_value=-1,
-#                  disable_logs=False):
-#         super().__init__(disable_logs)
-#         self.sensor_dict_path = sensor_dict_path
-#         self.downstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'downstream_dict.json')))
-#         self.upstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'upstream_dict.json')))
-#         self.spatial_adj = spatial_adj
-#         self.normalize_by_distance = normalize_by_distance
-#         self.fill_nans_value = fill_nans_value
-#         self.datetime_col = datetime_col
-#         self.value_col = value_col
-#         self.sensor_col = sensor_col
-#         self.new_columns = []
-
-#     def transform(self, df, current_smoothing=None, prev_smoothing=None):
-#         self._log("Adding adjacent sensor features.")
-
-#         if self.spatial_adj < 1:
-#             self._log("No adjacent sensors to add. Skipping.")
-#             return df, []
-
-#         pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
-#         pivot_stacked = pivot.stack().to_frame(self.value_col).rename_axis([self.datetime_col, self.sensor_col]).sort_index()
-
-#         # Drop excess previously computed adjacent features
-#         for direction in ['upstream', 'downstream']:
-#             existing_cols = [col for col in df.columns if col.startswith(f'{direction}_sensor_') and not col.endswith('_id')]
-#             expected_cols = [f'{direction}_sensor_{i+1}' for i in range(self.spatial_adj)]
-#             to_drop = list(set(existing_cols) - set(expected_cols))
-#             if to_drop:
-#                 df.drop(columns=to_drop, inplace=True)
-#                 self._log(f"Dropped excess {direction} columns: {to_drop}")
-
-#         for i in range(self.spatial_adj):
-#             down_col, up_col = f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}'
-#             if down_col in df.columns and up_col in df.columns and current_smoothing == prev_smoothing:
-#                 self._log(f"Skipping {down_col} and {up_col}, they already exist in the df (max value of downstream: {df[down_col].max()}).")
-#                 self.new_columns += [down_col, up_col]
-#                 continue
-
-#             # Generate maps
-#             down_map = {
-#                 s: self.downstream_sensor_dict.get(s, {}).get('downstream_sensor', [None] * self.spatial_adj)[i]
-#                 for s in df[self.sensor_col].unique()
-#             }
-#             up_map = {
-#                 s: self.upstream_sensor_dict.get(s, {}).get('upstream_sensor', [None] * self.spatial_adj)[i]
-#                 for s in df[self.sensor_col].unique()
-#             }
-
-#             # Map to get sensor ids
-#             df[f'{down_col}_id'] = df[self.sensor_col].map(down_map)
-#             df[f'{up_col}_id'] = df[self.sensor_col].map(up_map)
-
-#             # Create tuples for lookup and perform reindexing
-#             down_values = pivot_stacked[self.value_col].reindex(
-#                 list(zip(df[self.datetime_col], df[f'{down_col}_id']))).values
-#             up_values = pivot_stacked[self.value_col].reindex(
-#                 list(zip(df[self.datetime_col], df[f'{up_col}_id']))).values
-
-#             df[down_col] = down_values
-#             df[up_col] = up_values
-
-#             # Normalize
-#             if self.normalize_by_distance:
-#                 down_dist_map = {
-#                     s: self.downstream_sensor_dict.get(s, {}).get('downstream_distance', [np.nan] * self.spatial_adj)[i]
-#                     for s in df[self.sensor_col].unique()
-#                 }
-#                 up_dist_map = {
-#                     s: self.upstream_sensor_dict.get(s, {}).get('upstream_distance', [np.nan] * self.spatial_adj)[i]
-#                     for s in df[self.sensor_col].unique()
-#                 }
-#                 df[down_col] = df[down_col] / 3.6 / df[self.sensor_col].map(down_dist_map)
-#                 df[up_col] = df[up_col] / 3.6 / df[self.sensor_col].map(up_dist_map)
-
-#             # Cleanup
-#             df.drop(columns=[f'{down_col}_id', f'{up_col}_id'], inplace=True)
-#             df[down_col].fillna(self.fill_nans_value, inplace=True)
-#             df[up_col].fillna(self.fill_nans_value, inplace=True)
-#             self.new_columns += [down_col, up_col]
-#             self._log(f"Added {down_col}, {up_col}")
-
-#         return df, self.new_columns
 
 class TemporalLagFeatureAdder(LoggingMixin):
     def __init__(self, lags=3, relative=False, fill_nans_value=-1, disable_logs=False,
@@ -483,54 +304,7 @@ class CongestionFeatureEngineer(LoggingMixin):
         return df, c_cols + o_cols
     
     
-class PreviousWeekdayValueFeatureEngineer:
-    def __init__(self, datetime_col='date', sensor_col='sensor_id', value_col='value', horizon_minutes=15, strict_weekday_match=True):
-        self.datetime_col = datetime_col
-        self.sensor_col = sensor_col
-        self.value_col = value_col
-        self.horizon_minutes = horizon_minutes
-        self.strict_weekday_match = strict_weekday_match
-        self.new_column_name = f'prev_weekday_value_h{self.horizon_minutes}'
-
-    def transform(self, df):
-        df = df.copy()
-        df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
-
-        # Create pivot for fast lookup
-        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
-        stacked = pivot.stack()
-        stacked.index.names = [self.datetime_col, self.sensor_col]
-
-        # Get original day of week
-        df['current_dayofweek'] = df[self.datetime_col].dt.dayofweek
-
-        # Compute previous valid weekday date + horizon
-        def get_valid_timestamp(ts):
-            candidate = ts - timedelta(days=1)
-            while candidate.weekday() >= 5:
-                candidate -= timedelta(days=1)
-            return candidate + timedelta(minutes=self.horizon_minutes)
-
-        df['lookup_time'] = df[self.datetime_col].apply(get_valid_timestamp)
-        df['lookup_dayofweek'] = df['lookup_time'].dt.dayofweek
-
-        # Only allow Mon–Fri in both current and lookup timestamps if strict mode
-        if self.strict_weekday_match:
-            df['valid_pair'] = (df['current_dayofweek'] < 5) & (df['lookup_dayofweek'] < 5)
-        else:
-            df['valid_pair'] = True
-
-        # Perform lookup
-        lookup_values = stacked.reindex(list(zip(df['lookup_time'], df[self.sensor_col]))).values
-        df[self.new_column_name] = np.where(df['valid_pair'], lookup_values, np.nan)
-
-        # Cleanup
-        df.drop(columns=['lookup_time', 'current_dayofweek', 'lookup_dayofweek', 'valid_pair'], inplace=True)
-
-        return df, [self.new_column_name]
     
-    
-
 class PreviousWeekdayValueFeatureEngineerOptimal(LoggingMixin):
     """
     Adds a feature representing the value for each sensor from the previous non-weekend day,
@@ -666,6 +440,94 @@ class TargetVariableCreator(LoggingMixin):
         df = df.dropna(subset=['target'])
         self._log(f"Final target column ready. {df.shape[0]} rows retained after dropping NaNs.")
         return df, used_cols
+    
+    
+    
+    
+class AdjacentSensorFeatureAdderDeprecated(LoggingMixin):
+    def __init__(self,
+                 sensor_dict_path='../data',
+                 spatial_adj=5,
+                 normalize_by_distance=True,
+                 datetime_col='datetime',
+                 value_col='value',
+                 sensor_col='sensor_id',
+                 fill_nans_value=-1,
+                 disable_logs=False):
+        super().__init__(disable_logs)
+        self.sensor_dict_path = sensor_dict_path
+        self.downstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'downstream_dict.json')))
+        self.upstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'upstream_dict.json')))
+        self.spatial_adj = spatial_adj
+        self.normalize_by_distance = normalize_by_distance
+        self.fill_nans_value = fill_nans_value
+        self.datetime_col = datetime_col
+        self.value_col = value_col
+        self.sensor_col = sensor_col
+        self.new_columns = []
+
+    def transform(self, df, current_smoothing=None, prev_smoothing=None):
+        self._log("Adding adjacent sensor features.")
+        
+        if self.spatial_adj < 1:
+            self._log("No adjacent sensors to add. Skipping.")
+            return df, []
+    
+        
+        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+        sensors = df[self.sensor_col].unique()
+        
+        
+        # Drop any excess previously computed adjacent features
+        for direction in ['upstream', 'downstream']:
+            existing_cols = [col for col in df.columns if col.startswith(f'{direction}_sensor_') and not col.endswith('_id')]
+            expected_cols = [f'{direction}_sensor_{i+1}' for i in range(self.spatial_adj)]
+            to_drop = list(set(existing_cols) - set(expected_cols))
+            if to_drop:
+                df.drop(columns=to_drop, inplace=True)
+                self._log(f"Dropped excess {direction} columns: {to_drop}")
+
+        for i in range(self.spatial_adj):
+            down_col, up_col = f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}'
+            if down_col in df.columns and up_col in df.columns and current_smoothing == prev_smoothing:
+                self._log(f"Skipping {down_col} and {up_col}, they already exist in the df (max value of downstream: {df[down_col].max()}).")
+                self.new_columns += [down_col, up_col]
+                continue
+            down_map, down_dist = {}, {}
+            up_map, up_dist = {}, {}
+
+            for s in sensors:
+                ds = self.downstream_sensor_dict.get(s, {})
+                us = self.upstream_sensor_dict.get(s, {})
+
+                down_map[s] = ds.get('downstream_sensor', [None]*self.spatial_adj)[i]
+                down_dist[s] = ds.get('downstream_distance', [np.nan]*self.spatial_adj)[i]
+                up_map[s] = us.get('upstream_sensor', [None]*self.spatial_adj)[i]
+                up_dist[s] = us.get('upstream_distance', [np.nan]*self.spatial_adj)[i]
+
+            df[f'{down_col}_id'] = df[self.sensor_col].map(down_map)
+            df[f'{up_col}_id'] = df[self.sensor_col].map(up_map)
+
+            def safe_lookup(date, sid):
+                try:
+                    return np.nan if pd.isna(sid) else pivot.at[date, sid]
+                except KeyError:
+                    return np.nan
+
+            df[down_col] = [safe_lookup(d, s) for d, s in zip(df[self.datetime_col], df[f'{down_col}_id'])]
+            df[up_col] = [safe_lookup(d, s) for d, s in zip(df[self.datetime_col], df[f'{up_col}_id'])]
+
+            if self.normalize_by_distance:
+                df[down_col] = df[down_col] / 3.6 / df[self.sensor_col].map(down_dist)
+                df[up_col] = df[up_col] / 3.6 / df[self.sensor_col].map(up_dist)
+
+            df.drop(columns=[f'{down_col}_id', f'{up_col}_id'], inplace=True)
+            df[down_col].fillna(self.fill_nans_value, inplace=True)
+            df[up_col].fillna(self.fill_nans_value, inplace=True)
+            self.new_columns += [down_col, up_col]
+            self._log(f"Added {down_col}, {up_col}")
+
+        return df, self.new_columns
 
     
     
