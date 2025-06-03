@@ -1,507 +1,3513 @@
-diff --git a/__pycache__/data_pipeline_orchestrator.cpython-310.pyc b/__pycache__/data_pipeline_orchestrator.cpython-310.pyc
-index 9ca3d41..529830e 100644
-Binary files a/__pycache__/data_pipeline_orchestrator.cpython-310.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-310.pyc differ
-diff --git a/__pycache__/post_processing.cpython-310.pyc b/__pycache__/post_processing.cpython-310.pyc
-index 26806c6..89a88e4 100644
-Binary files a/__pycache__/post_processing.cpython-310.pyc and b/__pycache__/post_processing.cpython-310.pyc differ
+diff --git a/__init__.py b/__init__.py
+index 647fb2f..6ad1baa 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -1,7 +1,6 @@
+ # Import main classes for easy access
+ from .data_loader_orchestrator import *
+ from .data_pipeline_orchestrator import *
+-from .features import *
+ from .constants import *
+ from .helper_utils import *
+ from .model_tuning import *
 diff --git a/changes.txt b/changes.txt
-index 79337b8..e69de29 100644
+index 3b53a4f..e69de29 100644
 --- a/changes.txt
 +++ b/changes.txt
-@@ -1,448 +0,0 @@
+@@ -1,507 +0,0 @@
+-diff --git a/__pycache__/data_pipeline_orchestrator.cpython-310.pyc b/__pycache__/data_pipeline_orchestrator.cpython-310.pyc
+-index 9ca3d41..529830e 100644
+-Binary files a/__pycache__/data_pipeline_orchestrator.cpython-310.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-310.pyc differ
+-diff --git a/__pycache__/post_processing.cpython-310.pyc b/__pycache__/post_processing.cpython-310.pyc
+-index 26806c6..89a88e4 100644
+-Binary files a/__pycache__/post_processing.cpython-310.pyc and b/__pycache__/post_processing.cpython-310.pyc differ
 -diff --git a/changes.txt b/changes.txt
--index b25071a..e69de29 100644
+-index 79337b8..e69de29 100644
 ---- a/changes.txt
 -+++ b/changes.txt
--@@ -1,443 +0,0 @@
+-@@ -1,448 +0,0 @@
 --diff --git a/changes.txt b/changes.txt
---index 1bd346c..e69de29 100644
+--index b25071a..e69de29 100644
 ----- a/changes.txt
 --+++ b/changes.txt
---@@ -1,438 +0,0 @@
----diff --git a/__pycache__/data_loader_orchestrator.cpython-36.pyc b/__pycache__/data_loader_orchestrator.cpython-36.pyc
----index 169534b..9fd3d11 100644
----Binary files a/__pycache__/data_loader_orchestrator.cpython-36.pyc and b/__pycache__/data_loader_orchestrator.cpython-36.pyc differ
----diff --git a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc
----index 743c5c8..8fc155b 100644
----Binary files a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc differ
----diff --git a/__pycache__/features.cpython-36.pyc b/__pycache__/features.cpython-36.pyc
----index 1e0c1fc..58d86e7 100644
----Binary files a/__pycache__/features.cpython-36.pyc and b/__pycache__/features.cpython-36.pyc differ
----diff --git a/data_loader_orchestrator.py b/data_loader_orchestrator.py
----index 69147a0..6fa6665 100644
------- a/data_loader_orchestrator.py
----+++ b/data_loader_orchestrator.py
----@@ -28,7 +28,8 @@ class InitialTrafficDataLoader(LoggingMixin):
----         datetime_cols=['datetime', 'date'],
----         sensor_col='sensor_id',
----         value_col='value',
-----        disable_logs=False
----+        disable_logs=False,
----+        df_gman=None
----     ):
----         super().__init__(disable_logs=disable_logs)
----         self.file_path = file_path
----@@ -38,7 +39,7 @@ class InitialTrafficDataLoader(LoggingMixin):
----         self.datetime_col = None
----         self.sensor_col = sensor_col
----         self.value_col = value_col
-----        self.df_gman = None
----+        self.df_gman = df_gman
----         self.first_test_timestamp = None
----         self.df_as_gman_input = None
----         self.df_as_gman_input_orig = None
----@@ -152,37 +153,109 @@ class InitialTrafficDataLoader(LoggingMixin):
----         self._log(
----             f"Applied smoothing (window={window_size}, train_only={filter_on_train_only}, use_median_instead_of_mean={use_median_instead_of_mean}).")
---- 
-----    def add_gman_predictions(self):
----+    def add_gman_predictions_deprecated(self, model_prediction_col='gman_prediction', model_prediction_date_col='gman_prediction_date'):
----         self._log("Merging gman data.")
----         assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
----         self.df[self.sensor_col] = self.df[self.sensor_col].astype('category')
----         self.df_gman[self.sensor_col] = self.df_gman[self.sensor_col].astype(
----             'category')
----+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
----+            self.df_gman[model_prediction_date_col])
----+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
----+        # Limit df_gman to the datetime range of df
----+        min_date = self.df[self.datetime_col].min()
----+        max_date = self.df[self.datetime_col].max()
----+        self.df_gman = self.df_gman[
----+            (self.df_gman[model_prediction_date_col] >= min_date) &
----+            (self.df_gman[model_prediction_date_col] <= max_date)
----+        ]
----         self.df = self.df.set_index([self.datetime_col, self.sensor_col])
----         self.df_gman = self.df_gman.set_index(
-----            [self.datetime_col, self.sensor_col])
----+            [model_prediction_date_col, self.sensor_col])
----         self.df = self.df.join(self.df_gman, how='left').reset_index()
-----        missing_rows = self.df[self.df['gman_prediction'].isna()]
----+        missing_rows = self.df[self.df[model_prediction_col].isna()]
----         if not missing_rows.empty:
----             dropped_count = missing_rows.shape[0]
----             min_date = missing_rows[self.datetime_col].min()
----             max_date = missing_rows[self.datetime_col].max()
----             self._log(
----                 f"Dropping {dropped_count} rows with missing 'gman_prediction'. Date range: {min_date} to {max_date}.")
-----            self.df = self.df.dropna(subset=['gman_prediction'])
----+            self.df = self.df.dropna(subset=[model_prediction_col])
----         else:
----             self._log("No rows dropped for missing 'gman_predictions'.")
---- 
----+    def add_gman_predictions(self,
----+                             convert_prediction_to_delta_speed=True,
----+                             model_prediction_col='gman_prediction',
----+                             model_prediction_date_col='gman_prediction_date',
----+                             keep_target_date=True):
----+        self._log("Merging gman data.")
----+        assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
----+
----+        # Ensure datetime columns are datetime
----+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
----+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
----+            self.df_gman[model_prediction_date_col])
----+
----+        # Restrict df_gman to the date range in df
----+        min_date = self.df[self.datetime_col].min()
----+        max_date = self.df[self.datetime_col].max()
----+        self.df_gman = self.df_gman[
----+            (self.df_gman[model_prediction_date_col] >= min_date) &
----+            (self.df_gman[model_prediction_date_col] <= max_date)
----+        ]
----+
----+        # Columns to keep: sensor_id, prediction_date, gman_prediction (+ optionally target_date)
----+        merge_cols = [self.sensor_col,
----+                      model_prediction_date_col, model_prediction_col]
----+        if keep_target_date and 'gman_target_date' in self.df_gman.columns:
----+            merge_cols.append('gman_target_date')
----+
----+        df_gman_trimmed = self.df_gman[merge_cols].copy()
----+
----+        # Merge using prediction_date + sensor_id as keys
----+        self.df = pd.merge(
----+            self.df,
----+            df_gman_trimmed,
----+            how='left',
----+            left_on=[self.datetime_col, self.sensor_col],
----+            right_on=[model_prediction_date_col, self.sensor_col]
----+        )
----+
----+        # Optionally drop the join key (prediction_date)
----+        if not keep_target_date:
----+            self.df.drop(columns=[model_prediction_date_col], inplace=True)
----+
----+        # Log dropped rows (missing predictions)
----+        missing_rows = self.df[self.df[model_prediction_col].isna()]
----+        if not missing_rows.empty:
----+            dropped_count = missing_rows.shape[0]
----+            min_date = missing_rows[self.datetime_col].min()
----+            max_date = missing_rows[self.datetime_col].max()
----+            self._log(f"Dropping {dropped_count} rows with missing '{model_prediction_col}'. "
----+                      f"Date range: {min_date} to {max_date}.")
----+            self.df = self.df.dropna(subset=[model_prediction_col])
----+        else:
----+            self._log("No rows dropped for missing gman predictions.")
----+
----+        if convert_prediction_to_delta_speed:
----+            model_prediction_col_orig = model_prediction_col + '_orig'
----+            self.df[model_prediction_col_orig] = self.df[model_prediction_col]
----+            self.df[model_prediction_col] = self.df[model_prediction_col] - \
----+                self.df[self.value_col]
----+
----     def get_data(self,
----                  window_size=3,
-----                 filter_on_train_only=True,
----+                 filter_on_train_only=False,
----                  filter_extreme_changes=True,
----                  smooth_speeds=True,
-----                 use_median_instead_of_mean=True,
----+                 use_median_instead_of_mean=False,
----                  relative_threshold=0.7,
----                  test_size=1/3,
----                  diagnose_extreme_changes=False,
-----                 add_gman_predictions=False):
----+                 add_gman_predictions=False,
----+                 convert_gman_prediction_to_delta_speed=True,
----+                 ):
----         self.load_data_parquet()
----         self.align_sensors_to_common_timeframe()
----         self.add_test_set_column(test_size=test_size)
----@@ -195,7 +268,8 @@ class InitialTrafficDataLoader(LoggingMixin):
----             self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only,
----                                use_median_instead_of_mean=use_median_instead_of_mean)
----         if add_gman_predictions:
-----            self.add_gman_predictions()
----+            self.add_gman_predictions(
----+                convert_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed)
----         self.df[self.value_col] = self.df[self.value_col].astype(np.float32)
----         return self.df.copy()
---- 
----diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
----index 6c004ad..7d20870 100644
------- a/data_pipeline_orchestrator.py
----+++ b/data_pipeline_orchestrator.py
----@@ -15,7 +15,7 @@ from .helper_utils import *
---- import pickle
---- import time
---- import json
-----import re 
----+import re
---- # Configure logging
---- logging.basicConfig(
----     format='%(asctime)s - %(levelname)s - %(message)s',
----@@ -33,6 +33,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----         new_sensor_id_col='sensor_uid',
----         weather_cols=WEATHER_COLUMNS,
----         disable_logs=False,
----+        df_gman=None
----     ):
----         super().__init__(disable_logs=disable_logs)
----         self.file_path = file_path
----@@ -44,7 +45,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----         self.weather_cols = weather_cols
----         self.df = None
----         self.df_orig = None
-----        self.df_gman = None
----+        self.df_gman = df_gman
----         self.first_test_timestamp = None
----         self.feature_log = {}  # Track added features
----         self.smoothing = None
----@@ -60,6 +61,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----         relative_threshold=0.7,
----         diagnose_extreme_changes=False,
----         add_gman_predictions=False,
----+        use_gman_target=False,
----+        convert_gman_prediction_to_delta_speed=True,
----         window_size=3,
----         spatial_adj=5,
----         normalize_by_distance=True,
----@@ -67,16 +70,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----         relative_lags=True,
----         horizon=15,
----         filter_on_train_only=True,
-----        use_gman_target=False,
----         hour_start=6,
----         hour_end=19,
-----        quantile_threshold=0.9, 
-----        quantile_percentage=0.65, 
-----        lower_bound=0.01, 
----+        quantile_threshold=0.9,
----+        quantile_percentage=0.65,
----+        lower_bound=0.01,
----         upper_bound=0.99,
----         use_median_instead_of_mean_smoothing=True,
----+        drop_weather=True
----     ):
-----        
----+
----         # Determine current smoothing strategy ID
----         smoothing_id = (
----             f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
----@@ -90,8 +93,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----             sensor_col=self.sensor_col,
----             value_col=self.value_col,
----             disable_logs=self.disable_logs,
----+            df_gman=self.df_gman
----         )
-----        loader.df_gman = self.df_gman
----+
----         df = loader.get_data(
----             window_size=window_size,
----             filter_on_train_only=filter_on_train_only,
----@@ -102,20 +106,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----             diagnose_extreme_changes=diagnose_extreme_changes,
----             add_gman_predictions=add_gman_predictions,
----             use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
----+            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed
----         )
----         self.df_orig = loader.df_orig
----         self.first_test_timestamp = loader.first_test_timestamp
----         self.smoothing_prev = self.smoothing
----         self.smoothing = smoothing_id
---- 
-----        
-----
----         # Step 2: DateTime Features
----         dt_features = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
----         df, dt_cols = dt_features.transform(df)
----         self.feature_log['datetime_features'] = dt_cols
---- 
-----
----         # Step 3: Spatial Features
----         spatial = AdjacentSensorFeatureAdderOptimal(
----             sensor_dict_path=self.sensor_dict_path,
----@@ -128,7 +130,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----         )
----         self.upstream_sensor_dict = spatial.upstream_sensor_dict
----         self.downstream_sensor_dict = spatial.downstream_sensor_dict
-----        df, spatial_cols = spatial.transform(df,smoothing_id, self.smoothing_prev)
----+        df, spatial_cols = spatial.transform(
----+            df, smoothing_id, self.smoothing_prev)
----         self.feature_log['spatial_features'] = spatial_cols
---- 
----         # Step 4: Temporal Lag Features
----@@ -140,24 +143,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----             sensor_col=self.sensor_col,
----             value_col=self.value_col,
----         )
-----        df, lag_cols = lagger.transform(df,smoothing_id, self.smoothing_prev)
----+        df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
----         self.feature_log['lag_features'] = lag_cols
---- 
----         # Step 5: Congestion and Outlier Features
----         congestion = CongestionFeatureEngineer(hour_start=hour_start, hour_end=hour_end,
-----                                                   quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage, 
-----                                                   lower_bound=lower_bound, upper_bound=upper_bound)
----+                                               quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage,
----+                                               lower_bound=lower_bound, upper_bound=upper_bound)
----         df, congestion_cols = congestion.transform(df)
----         self.feature_log['congestion_features'] = congestion_cols
-----        
-----        
----+
----         # Step 6: Miscellaneous Features
----         misc = MiscellaneousFeatureEngineer(
----             sensor_col=self.sensor_col,
----             new_sensor_id_col=self.new_sensor_id_col,
----             weather_cols=self.weather_cols,
----         )
-----        df, misc_cols = misc.transform(df)
----+        df, misc_cols = misc.transform(df, drop_weather=drop_weather)
----         self.feature_log['miscellaneous_features'] = misc_cols
---- 
----         # Step 7: Target Variable
----@@ -174,7 +176,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---- 
----         # Store outputs
----         self.df = df
-----        self.all_added_features = list(set(col for cols in self.feature_log.values() for col in cols))
----+        self.all_added_features = list(
----+            set(col for cols in self.feature_log.values() for col in cols))
---- 
----         # Train/test split
----         train_df = df[~df['test_set']].copy()
----@@ -184,16 +187,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----         y_train = train_df['target']
----         X_test = test_df.drop(columns=['target'])
----         y_test = test_df['target']
-----        
-----        cols_to_drop = ['sensor_id', 'target_total_speed', 'target_speed_delta','date','sensor_id','test_set']
-----        
-----        # Drop unwanted columns 
-----        for df in [X_train,X_test]:
-----            
-----            df = df.drop(columns=[col for col in cols_to_drop if col in df.columns],inplace=True)
-----
-----  
-----        
----+
----+        cols_to_drop = ['sensor_id', 'target_total_speed',
----+                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
----+
----+        # Drop unwanted columns
----+        for df in [X_train, X_test]:
----+
----+            df = df.drop(
----+                columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
----+
----         self.X_train = X_train
----         self.X_test = X_test
----         self.y_train = y_train
----@@ -204,16 +207,19 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----     def validate_target_computation(self, use_gman_target=False, horizon=15):
----         self._log("Validating target variable...")
---- 
-----        df_test = self.df.copy().sort_values(by=[self.sensor_col, self.datetime_col])
----+        df_test = self.df.copy().sort_values(
----+            by=[self.sensor_col, self.datetime_col])
---- 
----         if use_gman_target:
----             df_test['expected_target'] = (
-----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
----+                df_test.groupby(self.sensor_col)[
----+                    self.value_col].shift(-horizon)
----                 - df_test.groupby(self.sensor_col)['gman_prediction'].shift(-horizon)
----             )
----         else:
----             df_test['expected_target'] = (
-----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
----+                df_test.groupby(self.sensor_col)[
----+                    self.value_col].shift(-horizon)
----                 - df_test[self.value_col]
----             )
---- 
----@@ -224,7 +230,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
----             return True
----         else:
----             incorrect_rows = df_test[df_test['target_correct'] == False]
-----            self._log(f"{len(incorrect_rows)} rows have incorrect target values.")
----+            self._log(
----+                f"{len(incorrect_rows)} rows have incorrect target values.")
----             return False
---- 
---- 
----@@ -265,7 +272,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---- #             sensor_col=self.sensor_col,
---- #             value_col=self.value_col,
---- #             disable_logs=self.disable_logs,
-----    
----+
---- #         )
---- #         loader.df_gman = self.gman_df
---- #         df = loader.get_data(add_gman_predictions=self.gman_df is not None)
----@@ -314,7 +321,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---- #         self.X_test = df.loc[df.test_set].drop(columns=["target"])
---- #         self.y_train = df.loc[~df.test_set, "target"]
---- #         self.y_test = df.loc[df.test_set, "target"]
-----        
----+
---- #         return self.X_train, self.X_test, self.y_train, self.y_test
---- 
---- #     def validate_target_variable(self):
----@@ -340,11 +347,3 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
---- #         else:
---- #             self._log("Some target values are incorrect!")
---- #             return False
-----
-----
-----
-----
-----    
-----    
-----
-----
----diff --git a/features.py b/features.py
----index 53a484a..de3e574 100644
------- a/features.py
----+++ b/features.py
----@@ -369,10 +369,11 @@ class MiscellaneousFeatureEngineer(LoggingMixin):
----         logging.info(f"Dropped columns: {dropped}")
----         return df, dropped
---- 
-----    def transform(self, df):
----+    def transform(self, df,drop_weather = True):
----         """Applies all miscellaneous transformations in one step."""
----         df, id_cols = self.map_sensor_ids(df)
-----        df, dropped_cols = self.drop_weather_features(df)
----+        if drop_weather:
----+            df, dropped_cols = self.drop_weather_features(df)
----         return df, id_cols + dropped_cols
---- 
---- 
----@@ -482,7 +483,7 @@ class TargetVariableCreator(LoggingMixin):
----         sensor_col='sensor_id',
----         datetime_col='date',
----         value_col='value',
-----        gman_col='gman_prediction',
----+        gman_col='gman_prediction_orig',
----         use_gman=False,
----         disable_logs=False
----     ):
----@@ -503,12 +504,12 @@ class TargetVariableCreator(LoggingMixin):
----         self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
---- 
----         if self.use_gman:
-----            df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
-----            df['target'] = df['target_total_speed'] - df['target_gman_prediction']
----+            #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
----+            df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
---- 
-----            check = df['target_total_speed'] - (df['target'] + df['target_gman_prediction'])
-----            if not np.allclose(check.fillna(0), 0):
-----                raise ValueError("Target variable is not a valid GMAN correction.")
----+            check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
----+            # if not np.allclose(check.fillna(0), 0):
----+            #     raise ValueError("Target variable is not a valid GMAN correction.")
---- 
----             self._log("GMAN correction target validated.")
----             used_cols = ['target_total_speed', 'target_speed_delta', 'target_gman_prediction', 'target']
+--@@ -1,443 +0,0 @@
+---diff --git a/changes.txt b/changes.txt
+---index 1bd346c..e69de29 100644
+------ a/changes.txt
+---+++ b/changes.txt
+---@@ -1,438 +0,0 @@
+----diff --git a/__pycache__/data_loader_orchestrator.cpython-36.pyc b/__pycache__/data_loader_orchestrator.cpython-36.pyc
+----index 169534b..9fd3d11 100644
+----Binary files a/__pycache__/data_loader_orchestrator.cpython-36.pyc and b/__pycache__/data_loader_orchestrator.cpython-36.pyc differ
+----diff --git a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc
+----index 743c5c8..8fc155b 100644
+----Binary files a/__pycache__/data_pipeline_orchestrator.cpython-36.pyc and b/__pycache__/data_pipeline_orchestrator.cpython-36.pyc differ
+----diff --git a/__pycache__/features.cpython-36.pyc b/__pycache__/features.cpython-36.pyc
+----index 1e0c1fc..58d86e7 100644
+----Binary files a/__pycache__/features.cpython-36.pyc and b/__pycache__/features.cpython-36.pyc differ
+----diff --git a/data_loader_orchestrator.py b/data_loader_orchestrator.py
+----index 69147a0..6fa6665 100644
+------- a/data_loader_orchestrator.py
+----+++ b/data_loader_orchestrator.py
+----@@ -28,7 +28,8 @@ class InitialTrafficDataLoader(LoggingMixin):
+----         datetime_cols=['datetime', 'date'],
+----         sensor_col='sensor_id',
+----         value_col='value',
+-----        disable_logs=False
+----+        disable_logs=False,
+----+        df_gman=None
+----     ):
+----         super().__init__(disable_logs=disable_logs)
+----         self.file_path = file_path
+----@@ -38,7 +39,7 @@ class InitialTrafficDataLoader(LoggingMixin):
+----         self.datetime_col = None
+----         self.sensor_col = sensor_col
+----         self.value_col = value_col
+-----        self.df_gman = None
+----+        self.df_gman = df_gman
+----         self.first_test_timestamp = None
+----         self.df_as_gman_input = None
+----         self.df_as_gman_input_orig = None
+----@@ -152,37 +153,109 @@ class InitialTrafficDataLoader(LoggingMixin):
+----         self._log(
+----             f"Applied smoothing (window={window_size}, train_only={filter_on_train_only}, use_median_instead_of_mean={use_median_instead_of_mean}).")
+---- 
+-----    def add_gman_predictions(self):
+----+    def add_gman_predictions_deprecated(self, model_prediction_col='gman_prediction', model_prediction_date_col='gman_prediction_date'):
+----         self._log("Merging gman data.")
+----         assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
+----         self.df[self.sensor_col] = self.df[self.sensor_col].astype('category')
+----         self.df_gman[self.sensor_col] = self.df_gman[self.sensor_col].astype(
+----             'category')
+----+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
+----+            self.df_gman[model_prediction_date_col])
+----+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
+----+        # Limit df_gman to the datetime range of df
+----+        min_date = self.df[self.datetime_col].min()
+----+        max_date = self.df[self.datetime_col].max()
+----+        self.df_gman = self.df_gman[
+----+            (self.df_gman[model_prediction_date_col] >= min_date) &
+----+            (self.df_gman[model_prediction_date_col] <= max_date)
+----+        ]
+----         self.df = self.df.set_index([self.datetime_col, self.sensor_col])
+----         self.df_gman = self.df_gman.set_index(
+-----            [self.datetime_col, self.sensor_col])
+----+            [model_prediction_date_col, self.sensor_col])
+----         self.df = self.df.join(self.df_gman, how='left').reset_index()
+-----        missing_rows = self.df[self.df['gman_prediction'].isna()]
+----+        missing_rows = self.df[self.df[model_prediction_col].isna()]
+----         if not missing_rows.empty:
+----             dropped_count = missing_rows.shape[0]
+----             min_date = missing_rows[self.datetime_col].min()
+----             max_date = missing_rows[self.datetime_col].max()
+----             self._log(
+----                 f"Dropping {dropped_count} rows with missing 'gman_prediction'. Date range: {min_date} to {max_date}.")
+-----            self.df = self.df.dropna(subset=['gman_prediction'])
+----+            self.df = self.df.dropna(subset=[model_prediction_col])
+----         else:
+----             self._log("No rows dropped for missing 'gman_predictions'.")
+---- 
+----+    def add_gman_predictions(self,
+----+                             convert_prediction_to_delta_speed=True,
+----+                             model_prediction_col='gman_prediction',
+----+                             model_prediction_date_col='gman_prediction_date',
+----+                             keep_target_date=True):
+----+        self._log("Merging gman data.")
+----+        assert self.df_gman is not None, "gman DataFrame is not provided. Please set df_gman in the constructor."
+----+
+----+        # Ensure datetime columns are datetime
+----+        self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
+----+        self.df_gman[model_prediction_date_col] = pd.to_datetime(
+----+            self.df_gman[model_prediction_date_col])
+----+
+----+        # Restrict df_gman to the date range in df
+----+        min_date = self.df[self.datetime_col].min()
+----+        max_date = self.df[self.datetime_col].max()
+----+        self.df_gman = self.df_gman[
+----+            (self.df_gman[model_prediction_date_col] >= min_date) &
+----+            (self.df_gman[model_prediction_date_col] <= max_date)
+----+        ]
+----+
+----+        # Columns to keep: sensor_id, prediction_date, gman_prediction (+ optionally target_date)
+----+        merge_cols = [self.sensor_col,
+----+                      model_prediction_date_col, model_prediction_col]
+----+        if keep_target_date and 'gman_target_date' in self.df_gman.columns:
+----+            merge_cols.append('gman_target_date')
+----+
+----+        df_gman_trimmed = self.df_gman[merge_cols].copy()
+----+
+----+        # Merge using prediction_date + sensor_id as keys
+----+        self.df = pd.merge(
+----+            self.df,
+----+            df_gman_trimmed,
+----+            how='left',
+----+            left_on=[self.datetime_col, self.sensor_col],
+----+            right_on=[model_prediction_date_col, self.sensor_col]
+----+        )
+----+
+----+        # Optionally drop the join key (prediction_date)
+----+        if not keep_target_date:
+----+            self.df.drop(columns=[model_prediction_date_col], inplace=True)
+----+
+----+        # Log dropped rows (missing predictions)
+----+        missing_rows = self.df[self.df[model_prediction_col].isna()]
+----+        if not missing_rows.empty:
+----+            dropped_count = missing_rows.shape[0]
+----+            min_date = missing_rows[self.datetime_col].min()
+----+            max_date = missing_rows[self.datetime_col].max()
+----+            self._log(f"Dropping {dropped_count} rows with missing '{model_prediction_col}'. "
+----+                      f"Date range: {min_date} to {max_date}.")
+----+            self.df = self.df.dropna(subset=[model_prediction_col])
+----+        else:
+----+            self._log("No rows dropped for missing gman predictions.")
+----+
+----+        if convert_prediction_to_delta_speed:
+----+            model_prediction_col_orig = model_prediction_col + '_orig'
+----+            self.df[model_prediction_col_orig] = self.df[model_prediction_col]
+----+            self.df[model_prediction_col] = self.df[model_prediction_col] - \
+----+                self.df[self.value_col]
+----+
+----     def get_data(self,
+----                  window_size=3,
+-----                 filter_on_train_only=True,
+----+                 filter_on_train_only=False,
+----                  filter_extreme_changes=True,
+----                  smooth_speeds=True,
+-----                 use_median_instead_of_mean=True,
+----+                 use_median_instead_of_mean=False,
+----                  relative_threshold=0.7,
+----                  test_size=1/3,
+----                  diagnose_extreme_changes=False,
+-----                 add_gman_predictions=False):
+----+                 add_gman_predictions=False,
+----+                 convert_gman_prediction_to_delta_speed=True,
+----+                 ):
+----         self.load_data_parquet()
+----         self.align_sensors_to_common_timeframe()
+----         self.add_test_set_column(test_size=test_size)
+----@@ -195,7 +268,8 @@ class InitialTrafficDataLoader(LoggingMixin):
+----             self.smooth_speeds(window_size=window_size, filter_on_train_only=filter_on_train_only,
+----                                use_median_instead_of_mean=use_median_instead_of_mean)
+----         if add_gman_predictions:
+-----            self.add_gman_predictions()
+----+            self.add_gman_predictions(
+----+                convert_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed)
+----         self.df[self.value_col] = self.df[self.value_col].astype(np.float32)
+----         return self.df.copy()
+---- 
+----diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
+----index 6c004ad..7d20870 100644
+------- a/data_pipeline_orchestrator.py
+----+++ b/data_pipeline_orchestrator.py
+----@@ -15,7 +15,7 @@ from .helper_utils import *
+---- import pickle
+---- import time
+---- import json
+-----import re 
+----+import re
+---- # Configure logging
+---- logging.basicConfig(
+----     format='%(asctime)s - %(levelname)s - %(message)s',
+----@@ -33,6 +33,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----         new_sensor_id_col='sensor_uid',
+----         weather_cols=WEATHER_COLUMNS,
+----         disable_logs=False,
+----+        df_gman=None
+----     ):
+----         super().__init__(disable_logs=disable_logs)
+----         self.file_path = file_path
+----@@ -44,7 +45,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----         self.weather_cols = weather_cols
+----         self.df = None
+----         self.df_orig = None
+-----        self.df_gman = None
+----+        self.df_gman = df_gman
+----         self.first_test_timestamp = None
+----         self.feature_log = {}  # Track added features
+----         self.smoothing = None
+----@@ -60,6 +61,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----         relative_threshold=0.7,
+----         diagnose_extreme_changes=False,
+----         add_gman_predictions=False,
+----+        use_gman_target=False,
+----+        convert_gman_prediction_to_delta_speed=True,
+----         window_size=3,
+----         spatial_adj=5,
+----         normalize_by_distance=True,
+----@@ -67,16 +70,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----         relative_lags=True,
+----         horizon=15,
+----         filter_on_train_only=True,
+-----        use_gman_target=False,
+----         hour_start=6,
+----         hour_end=19,
+-----        quantile_threshold=0.9, 
+-----        quantile_percentage=0.65, 
+-----        lower_bound=0.01, 
+----+        quantile_threshold=0.9,
+----+        quantile_percentage=0.65,
+----+        lower_bound=0.01,
+----         upper_bound=0.99,
+----         use_median_instead_of_mean_smoothing=True,
+----+        drop_weather=True
+----     ):
+-----        
+----+
+----         # Determine current smoothing strategy ID
+----         smoothing_id = (
+----             f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
+----@@ -90,8 +93,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----             sensor_col=self.sensor_col,
+----             value_col=self.value_col,
+----             disable_logs=self.disable_logs,
+----+            df_gman=self.df_gman
+----         )
+-----        loader.df_gman = self.df_gman
+----+
+----         df = loader.get_data(
+----             window_size=window_size,
+----             filter_on_train_only=filter_on_train_only,
+----@@ -102,20 +106,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----             diagnose_extreme_changes=diagnose_extreme_changes,
+----             add_gman_predictions=add_gman_predictions,
+----             use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
+----+            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed
+----         )
+----         self.df_orig = loader.df_orig
+----         self.first_test_timestamp = loader.first_test_timestamp
+----         self.smoothing_prev = self.smoothing
+----         self.smoothing = smoothing_id
+---- 
+-----        
+-----
+----         # Step 2: DateTime Features
+----         dt_features = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
+----         df, dt_cols = dt_features.transform(df)
+----         self.feature_log['datetime_features'] = dt_cols
+---- 
+-----
+----         # Step 3: Spatial Features
+----         spatial = AdjacentSensorFeatureAdderOptimal(
+----             sensor_dict_path=self.sensor_dict_path,
+----@@ -128,7 +130,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----         )
+----         self.upstream_sensor_dict = spatial.upstream_sensor_dict
+----         self.downstream_sensor_dict = spatial.downstream_sensor_dict
+-----        df, spatial_cols = spatial.transform(df,smoothing_id, self.smoothing_prev)
+----+        df, spatial_cols = spatial.transform(
+----+            df, smoothing_id, self.smoothing_prev)
+----         self.feature_log['spatial_features'] = spatial_cols
+---- 
+----         # Step 4: Temporal Lag Features
+----@@ -140,24 +143,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----             sensor_col=self.sensor_col,
+----             value_col=self.value_col,
+----         )
+-----        df, lag_cols = lagger.transform(df,smoothing_id, self.smoothing_prev)
+----+        df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
+----         self.feature_log['lag_features'] = lag_cols
+---- 
+----         # Step 5: Congestion and Outlier Features
+----         congestion = CongestionFeatureEngineer(hour_start=hour_start, hour_end=hour_end,
+-----                                                   quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage, 
+-----                                                   lower_bound=lower_bound, upper_bound=upper_bound)
+----+                                               quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage,
+----+                                               lower_bound=lower_bound, upper_bound=upper_bound)
+----         df, congestion_cols = congestion.transform(df)
+----         self.feature_log['congestion_features'] = congestion_cols
+-----        
+-----        
+----+
+----         # Step 6: Miscellaneous Features
+----         misc = MiscellaneousFeatureEngineer(
+----             sensor_col=self.sensor_col,
+----             new_sensor_id_col=self.new_sensor_id_col,
+----             weather_cols=self.weather_cols,
+----         )
+-----        df, misc_cols = misc.transform(df)
+----+        df, misc_cols = misc.transform(df, drop_weather=drop_weather)
+----         self.feature_log['miscellaneous_features'] = misc_cols
+---- 
+----         # Step 7: Target Variable
+----@@ -174,7 +176,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---- 
+----         # Store outputs
+----         self.df = df
+-----        self.all_added_features = list(set(col for cols in self.feature_log.values() for col in cols))
+----+        self.all_added_features = list(
+----+            set(col for cols in self.feature_log.values() for col in cols))
+---- 
+----         # Train/test split
+----         train_df = df[~df['test_set']].copy()
+----@@ -184,16 +187,16 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----         y_train = train_df['target']
+----         X_test = test_df.drop(columns=['target'])
+----         y_test = test_df['target']
+-----        
+-----        cols_to_drop = ['sensor_id', 'target_total_speed', 'target_speed_delta','date','sensor_id','test_set']
+-----        
+-----        # Drop unwanted columns 
+-----        for df in [X_train,X_test]:
+-----            
+-----            df = df.drop(columns=[col for col in cols_to_drop if col in df.columns],inplace=True)
+-----
+-----  
+-----        
+----+
+----+        cols_to_drop = ['sensor_id', 'target_total_speed',
+----+                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
+----+
+----+        # Drop unwanted columns
+----+        for df in [X_train, X_test]:
+----+
+----+            df = df.drop(
+----+                columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
+----+
+----         self.X_train = X_train
+----         self.X_test = X_test
+----         self.y_train = y_train
+----@@ -204,16 +207,19 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----     def validate_target_computation(self, use_gman_target=False, horizon=15):
+----         self._log("Validating target variable...")
+---- 
+-----        df_test = self.df.copy().sort_values(by=[self.sensor_col, self.datetime_col])
+----+        df_test = self.df.copy().sort_values(
+----+            by=[self.sensor_col, self.datetime_col])
+---- 
+----         if use_gman_target:
+----             df_test['expected_target'] = (
+-----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
+----+                df_test.groupby(self.sensor_col)[
+----+                    self.value_col].shift(-horizon)
+----                 - df_test.groupby(self.sensor_col)['gman_prediction'].shift(-horizon)
+----             )
+----         else:
+----             df_test['expected_target'] = (
+-----                df_test.groupby(self.sensor_col)[self.value_col].shift(-horizon)
+----+                df_test.groupby(self.sensor_col)[
+----+                    self.value_col].shift(-horizon)
+----                 - df_test[self.value_col]
+----             )
+---- 
+----@@ -224,7 +230,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+----             return True
+----         else:
+----             incorrect_rows = df_test[df_test['target_correct'] == False]
+-----            self._log(f"{len(incorrect_rows)} rows have incorrect target values.")
+----+            self._log(
+----+                f"{len(incorrect_rows)} rows have incorrect target values.")
+----             return False
+---- 
+---- 
+----@@ -265,7 +272,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---- #             sensor_col=self.sensor_col,
+---- #             value_col=self.value_col,
+---- #             disable_logs=self.disable_logs,
+-----    
+----+
+---- #         )
+---- #         loader.df_gman = self.gman_df
+---- #         df = loader.get_data(add_gman_predictions=self.gman_df is not None)
+----@@ -314,7 +321,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---- #         self.X_test = df.loc[df.test_set].drop(columns=["target"])
+---- #         self.y_train = df.loc[~df.test_set, "target"]
+---- #         self.y_test = df.loc[df.test_set, "target"]
+-----        
+----+
+---- #         return self.X_train, self.X_test, self.y_train, self.y_test
+---- 
+---- #     def validate_target_variable(self):
+----@@ -340,11 +347,3 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+---- #         else:
+---- #             self._log("Some target values are incorrect!")
+---- #             return False
+-----
+-----
+-----
+-----
+-----    
+-----    
+-----
+-----
+----diff --git a/features.py b/features.py
+----index 53a484a..de3e574 100644
+------- a/features.py
+----+++ b/features.py
+----@@ -369,10 +369,11 @@ class MiscellaneousFeatureEngineer(LoggingMixin):
+----         logging.info(f"Dropped columns: {dropped}")
+----         return df, dropped
+---- 
+-----    def transform(self, df):
+----+    def transform(self, df,drop_weather = True):
+----         """Applies all miscellaneous transformations in one step."""
+----         df, id_cols = self.map_sensor_ids(df)
+-----        df, dropped_cols = self.drop_weather_features(df)
+----+        if drop_weather:
+----+            df, dropped_cols = self.drop_weather_features(df)
+----         return df, id_cols + dropped_cols
+---- 
+---- 
+----@@ -482,7 +483,7 @@ class TargetVariableCreator(LoggingMixin):
+----         sensor_col='sensor_id',
+----         datetime_col='date',
+----         value_col='value',
+-----        gman_col='gman_prediction',
+----+        gman_col='gman_prediction_orig',
+----         use_gman=False,
+----         disable_logs=False
+----     ):
+----@@ -503,12 +504,12 @@ class TargetVariableCreator(LoggingMixin):
+----         self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
+---- 
+----         if self.use_gman:
+-----            df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
+-----            df['target'] = df['target_total_speed'] - df['target_gman_prediction']
+----+            #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
+----+            df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
+---- 
+-----            check = df['target_total_speed'] - (df['target'] + df['target_gman_prediction'])
+-----            if not np.allclose(check.fillna(0), 0):
+-----                raise ValueError("Target variable is not a valid GMAN correction.")
+----+            check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
+----+            # if not np.allclose(check.fillna(0), 0):
+----+            #     raise ValueError("Target variable is not a valid GMAN correction.")
+---- 
+----             self._log("GMAN correction target validated.")
+----             used_cols = ['target_total_speed', 'target_speed_delta', 'target_gman_prediction', 'target']
+-diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
+-index a27ea44..37776e7 100644
+---- a/data_pipeline_orchestrator.py
+-+++ b/data_pipeline_orchestrator.py
+-@@ -198,6 +198,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+- 
+-         # Store outputs
+-         self.df = df
+-+        self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
+-         self.all_added_features = list(
+-             set(col for cols in self.feature_log.values() for col in cols))
+- 
+-@@ -211,7 +212,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+-         y_test = test_df['target']
+- 
+-         cols_to_drop = ['sensor_id', 'target_total_speed',
+--                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
+-+                        'target_speed_delta', 'date', 'sensor_id', 
+-+                        'test_set', 'gman_prediction_date', 'gman_target_date','date_of_prediction']
+- 
+-         # Drop unwanted columns
+-         for df in [X_train, X_test]:
+-diff --git a/model_comparison.py b/model_comparison.py
+-index ae03d72..04cc667 100644
+---- a/model_comparison.py
+-+++ b/model_comparison.py
+-@@ -229,6 +229,8 @@ class ModelEvaluator:
+-         """
+-         # Calculate prediction errors
+-         errors = self.y_test - y_pred
+-+        self.errors_delta_speed = errors
+-+        self.errors_absolute_speed = self.y_test - self.y_pred_before_reconstruction
+-         abs_errors = np.abs(errors)
+- 
+-         # Standard error metrics
+-diff --git a/post_processing.py b/post_processing.py
+-index 5ce6201..5ac0179 100644
+---- a/post_processing.py
+-+++ b/post_processing.py
+-@@ -318,7 +318,7 @@ class PredictionCorrectionPerSensor:
+-         - smoothed_y_pred: np.ndarray - Smoothed predictions.
+-         """
+-         y_pred = self._align_predictions_to_sensor(y_pred)
+--        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=True, min_periods=1).median().values
+-+        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=False, min_periods=1).median().values
+- 
+-         if self.rounding is not None:
+-             smoothed_y_pred = np.round(smoothed_y_pred, self.rounding)
 diff --git a/data_pipeline_orchestrator.py b/data_pipeline_orchestrator.py
-index a27ea44..37776e7 100644
+index 37776e7..d0c54da 100644
 --- a/data_pipeline_orchestrator.py
 +++ b/data_pipeline_orchestrator.py
-@@ -198,6 +198,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+@@ -1,58 +1,64 @@
+-
+-import os
+-import pandas as pd
+-import numpy as np
+-import warnings
+-from sklearn.model_selection import train_test_split
+-from .features import *
++from .features.sensor_encoder import MeanSensorEncoder, OrdinalSensorEncoder, OneHotSensorEncoder
++from .features.calendar_features import DateTimeFeatureEngineer
++from .features.temporal_features import TemporalLagFeatureAdder
++from .features.congestion_features import CongestionFeatureEngineer
++from .features.historical_reference_features import PreviousWeekdayValueFeatureEngineer
++from .features.adjacent_features import AdjacentSensorFeatureAdder
++from .features.target_variable_feature import TargetVariableCreator
++from .features.misc_features import WeatherFeatureDropper
+ from .data_loader_orchestrator import InitialTrafficDataLoader
+ from .constants import colnames, WEATHER_COLUMNS
+-import random
+-import matplotlib.pyplot as plt
+-import logging
+-from tqdm.auto import tqdm
+-from .helper_utils import *
+-import pickle
+-import time
+-import json
+-import re
+-# Configure logging
+-logging.basicConfig(
+-    format='%(asctime)s - %(levelname)s - %(message)s',
+-    level=logging.DEBUG  # You can set this to DEBUG, WARNING, etc. as needed
+-)
+-
++from .helper_utils import LoggingMixin
++from typing import Optional
++import os
++import warnings
++import pandas as pd
  
-         # Store outputs
+ class TrafficDataPipelineOrchestrator(LoggingMixin):
+     def __init__(
+         self,
+-        file_path,
+-        sensor_col='sensor_id',
+-        datetime_col='date',
+-        value_col='value',
+-        new_sensor_id_col='sensor_uid',
+-        weather_cols=WEATHER_COLUMNS,
+-        disable_logs=False,
+-        df_gman=None
++        file_path: str,
++        sensor_col: str = 'sensor_id',
++        datetime_col: str = 'date',
++        value_col: str = 'value',
++        new_sensor_col: str = 'sensor_uid',
++        weather_cols: Optional[list] = WEATHER_COLUMNS,
++        disable_logs: bool = False,
++        df_gman: Optional[pd.DataFrame] = None,
++        sensor_encoding_type: str = "ordinal"  # "ordinal", "mean", or "onehot"
+     ):
+         super().__init__(disable_logs=disable_logs)
+         self.file_path = file_path
+         self.sensor_dict_path = os.path.dirname(file_path)
+         self.sensor_col = sensor_col
++        self.new_sensor_col = new_sensor_col
+         self.datetime_col = datetime_col
+         self.value_col = value_col
+-        self.new_sensor_id_col = new_sensor_id_col
+-        self.weather_cols = weather_cols
++        
++        self.weather_cols = weather_cols or []
++        self.df_gman = df_gman
++        self.sensor_encoding_type = sensor_encoding_type
++
++        # Runtime attributes
+         self.df = None
+         self.df_orig = None
+-        self.df_gman = df_gman
+         self.first_test_timestamp = None
+-        self.feature_log = {}  # Track added features
++        self.feature_log = {}
+         self.smoothing = None
+         self.smoothing_prev = None
+         self.upstream_sensor_dict = None
+         self.downstream_sensor_dict = None
+ 
++    def _get_sensor_encoder(self):
++        if self.sensor_encoding_type == "ordinal":
++            return OrdinalSensorEncoder(sensor_col=self.sensor_col, new_sensor_col=self.new_sensor_col, disable_logs=self.disable_logs)
++        elif self.sensor_encoding_type == "mean":
++            return MeanSensorEncoder(sensor_col=self.sensor_col,new_sensor_col=self.new_sensor_col, disable_logs=self.disable_logs)
++        elif self.sensor_encoding_type == "onehot":
++            return OneHotSensorEncoder(sensor_col=self.sensor_col,new_sensor_col=self.new_sensor_col, disable_logs=self.disable_logs)
++        else:
++            raise ValueError(f"Unsupported sensor encoding type: {self.sensor_encoding_type},you must choose 'ordinal', 'mean', or 'onehot'.")
++
+     def run_pipeline(
+         self,
+         test_size=1/3,
+@@ -65,9 +71,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         convert_gman_prediction_to_delta_speed=True,
+         window_size=3,
+         spatial_adj=1,
+-        adj_are_relative = False,
++        adj_are_relative=False,
+         normalize_by_distance=True,
+-        lag_steps=20,
++        lag_steps=25,
+         relative_lags=True,
+         horizon=15,
+         filter_on_train_only=True,
+@@ -77,23 +83,20 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         quantile_percentage=0.65,
+         lower_bound=0.01,
+         upper_bound=0.99,
+-        use_median_instead_of_mean_smoothing=True,
++        use_median_instead_of_mean_smoothing=False,
+         drop_weather=True,
+         add_previous_weekday_feature=True,
+         strict_weekday_match=True
+     ):
+-        
+         if not add_previous_weekday_feature and strict_weekday_match is not None:
+             warnings.warn("'strict_weekday_match' has no effect since 'add_previous_weekday_feature' is False")
+ 
+-
+-        # Determine current smoothing strategy ID
+         smoothing_id = (
+             f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
+             if smooth_speeds else "no_smoothing"
+         )
+ 
+-        # Step 1: Initial data loading and cleaning
++        # Step 1: Load data
+         loader = InitialTrafficDataLoader(
+             file_path=self.file_path,
+             datetime_cols=[self.datetime_col],
+@@ -102,7 +105,6 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+             disable_logs=self.disable_logs,
+             df_gman=self.df_gman
+         )
+-
+         df = loader.get_data(
+             window_size=window_size,
+             filter_on_train_only=filter_on_train_only,
+@@ -119,6 +121,12 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         self.first_test_timestamp = loader.first_test_timestamp
+         self.smoothing_prev = self.smoothing
+         self.smoothing = smoothing_id
++        
++        
++        # Step 2: Encode Sensor IDs
++        self.df = df
++        encoder = self._get_sensor_encoder()
++        df = encoder.encode(df)
+ 
+         # Step 2: DateTime Features
+         dt_features = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
+@@ -126,11 +134,11 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         self.feature_log['datetime_features'] = dt_cols
+ 
+         # Step 3: Spatial Features
+-        spatial = AdjacentSensorFeatureAdderOptimal(
++        spatial = AdjacentSensorFeatureAdder(
+             sensor_dict_path=self.sensor_dict_path,
+             spatial_adj=spatial_adj,
+             normalize_by_distance=normalize_by_distance,
+-            adj_are_relative= adj_are_relative,
++            adj_are_relative=adj_are_relative,
+             datetime_col=self.datetime_col,
+             value_col=self.value_col,
+             sensor_col=self.sensor_col,
+@@ -138,8 +146,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         )
+         self.upstream_sensor_dict = spatial.upstream_sensor_dict
+         self.downstream_sensor_dict = spatial.downstream_sensor_dict
+-        df, spatial_cols = spatial.transform(
+-            df, smoothing_id, self.smoothing_prev)
++        df, spatial_cols = spatial.transform(df, smoothing_id, self.smoothing_prev)
+         self.feature_log['spatial_features'] = spatial_cols
+ 
+         # Step 4: Temporal Lag Features
+@@ -150,21 +157,25 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+             disable_logs=self.disable_logs,
+             sensor_col=self.sensor_col,
+             value_col=self.value_col,
+-          
+         )
+         df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
+         self.feature_log['lag_features'] = lag_cols
+ 
+-        # Step 5: Congestion and Outlier Features
+-        congestion = CongestionFeatureEngineer(hour_start=hour_start, hour_end=hour_end,
+-                                               quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage,
+-                                               lower_bound=lower_bound, upper_bound=upper_bound)
++        # Step 5: Congestion & Outliers
++        congestion = CongestionFeatureEngineer(
++            hour_start=hour_start,
++            hour_end=hour_end,
++            quantile_threshold=quantile_threshold,
++            quantile_percentage=quantile_percentage,
++            lower_bound=lower_bound,
++            upper_bound=upper_bound
++        )
+         df, congestion_cols = congestion.transform(df)
+         self.feature_log['congestion_features'] = congestion_cols
+-        
+-        
++
++        # Step 6: Previous Weekday
+         if add_previous_weekday_feature:
+-            prevday = PreviousWeekdayValueFeatureEngineerOptimal(
++            prevday = PreviousWeekdayValueFeatureEngineer(
+                 datetime_col=self.datetime_col,
+                 sensor_col=self.sensor_col,
+                 value_col=self.value_col,
+@@ -175,34 +186,30 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+             df, prevday_cols = prevday.transform(df)
+             self.feature_log['previous_day_features'] = prevday_cols
+ 
+-        # Step 6: Miscellaneous Features
+-        misc = MiscellaneousFeatureEngineer(
+-            sensor_col=self.sensor_col,
+-            new_sensor_id_col=self.new_sensor_id_col,
+-            weather_cols=self.weather_cols,
+-        )
+-        df, misc_cols = misc.transform(df, drop_weather=drop_weather)
+-        self.feature_log['miscellaneous_features'] = misc_cols
++        # Step 7: Drop Weather Features
++        if drop_weather:
++            dropper = WeatherFeatureDropper(weather_cols=self.weather_cols)
++            df, dropped_cols = dropper.transform(df)
++            self.feature_log['weather_dropped'] = dropped_cols
+ 
+-        # Step 7: Target Variable
++        
++
++        # Step 9: Target Variable
+         target_creator = TargetVariableCreator(
+             horizon=horizon,
+-            sensor_col=self.new_sensor_id_col,
++            sensor_col=self.sensor_col,
+             value_col=self.value_col,
+             datetime_col=self.datetime_col,
+             gman_col='gman_prediction',
+-            use_gman=use_gman_target,
++            use_gman=use_gman_target
+         )
+         df, target_cols = target_creator.transform(df)
+         self.feature_log['target_variables'] = target_cols
+ 
+-        # Store outputs
          self.df = df
-+        self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
-         self.all_added_features = list(
-             set(col for cols in self.feature_log.values() for col in cols))
+         self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
+-        self.all_added_features = list(
+-            set(col for cols in self.feature_log.values() for col in cols))
++        self.all_added_features = list(set(col for cols in self.feature_log.values() for col in cols))
  
-@@ -211,7 +212,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+-        # Train/test split
+         train_df = df[~df['test_set']].copy()
+         test_df = df[df['test_set']].copy()
+ 
+@@ -211,163 +218,17 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
+         X_test = test_df.drop(columns=['target'])
          y_test = test_df['target']
  
-         cols_to_drop = ['sensor_id', 'target_total_speed',
--                        'target_speed_delta', 'date', 'sensor_id', 'test_set', 'gman_prediction_date', 'gman_target_date']
-+                        'target_speed_delta', 'date', 'sensor_id', 
-+                        'test_set', 'gman_prediction_date', 'gman_target_date','date_of_prediction']
+-        cols_to_drop = ['sensor_id', 'target_total_speed',
+-                        'target_speed_delta', 'date', 'sensor_id', 
+-                        'test_set', 'gman_prediction_date', 'gman_target_date','date_of_prediction']
+-
+-        # Drop unwanted columns
+-        for df in [X_train, X_test]:
++        cols_to_drop = [
++            'sensor_id', 'target_total_speed', 'target_speed_delta', 'date',
++            'test_set', 'gman_prediction_date', 'gman_target_date', 'date_of_prediction'
++        ]
  
-         # Drop unwanted columns
-         for df in [X_train, X_test]:
-diff --git a/model_comparison.py b/model_comparison.py
-index ae03d72..04cc667 100644
---- a/model_comparison.py
-+++ b/model_comparison.py
-@@ -229,6 +229,8 @@ class ModelEvaluator:
-         """
-         # Calculate prediction errors
-         errors = self.y_test - y_pred
-+        self.errors_delta_speed = errors
-+        self.errors_absolute_speed = self.y_test - self.y_pred_before_reconstruction
-         abs_errors = np.abs(errors)
+-            df = df.drop(
+-                columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
++        for df_ in [X_train, X_test]:
++            df_.drop(columns=[col for col in cols_to_drop if col in df_.columns], inplace=True)
  
-         # Standard error metrics
-diff --git a/post_processing.py b/post_processing.py
-index 5ce6201..5ac0179 100644
---- a/post_processing.py
-+++ b/post_processing.py
-@@ -318,7 +318,7 @@ class PredictionCorrectionPerSensor:
-         - smoothed_y_pred: np.ndarray - Smoothed predictions.
-         """
-         y_pred = self._align_predictions_to_sensor(y_pred)
--        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=True, min_periods=1).median().values
-+        smoothed_y_pred = pd.Series(y_pred).rolling(window=window_size, center=False, min_periods=1).median().values
+         self.X_train = X_train
+         self.X_test = X_test
+         self.y_train = y_train
+         self.y_test = y_test
  
-         if self.rounding is not None:
-             smoothed_y_pred = np.round(smoothed_y_pred, self.rounding)
+-        return X_train, X_test, y_train, y_test
+-
+-    def validate_target_computation(self, use_gman_target=False, horizon=15):
+-        self._log("Validating target variable...")
+-
+-        df_test = self.df.copy().sort_values(
+-            by=[self.sensor_col, self.datetime_col])
+-
+-        if use_gman_target:
+-            df_test['expected_target'] = (
+-                df_test.groupby(self.sensor_col)[
+-                    self.value_col].shift(-horizon)
+-                - df_test.groupby(self.sensor_col)['gman_prediction'].shift(-horizon)
+-            )
+-        else:
+-            df_test['expected_target'] = (
+-                df_test.groupby(self.sensor_col)[
+-                    self.value_col].shift(-horizon)
+-                - df_test[self.value_col]
+-            )
+-
+-        df_test['target_correct'] = df_test['target'] == df_test['expected_target']
+-
+-        if df_test['target_correct'].all():
+-            self._log("All target values are correct!")
+-            return True
+-        else:
+-            incorrect_rows = df_test[df_test['target_correct'] == False]
+-            self._log(
+-                f"{len(incorrect_rows)} rows have incorrect target values.")
+-            return False
+-
+-
+-# class TrafficMLPipelineOrchestrator(LoggingMixin):
+-#     def __init__(
+-#         self,
+-#         file_path,
+-#         datetime_col="datetime",
+-#         sensor_col="sensor_id",
+-#         value_col="value",
+-#         test_size=1 / 3,
+-#         gman_df=None,
+-#         gman_correction_as_target=False,
+-#         horizon=15,
+-#         disable_logs=False,
+-#     ):
+-#         self.file_path = file_path
+-#         self.datetime_col = datetime_col
+-#         self.sensor_col = sensor_col
+-#         self.value_col = value_col
+-
+-#         self.gman_df = gman_df
+-#         self.gman_correction_as_target = gman_correction_as_target
+-#         self.horizon = horizon
+-#         self.disable_logs = disable_logs
+-
+-#         self.df = None
+-#         self.df_orig = None
+-#         self.X_train = None
+-#         self.X_test = None
+-#         self.y_train = None
+-#         self.y_test = None
+-
+-#     def run_pipeline(self):
+-#         loader = InitialTrafficDataLoader(
+-#             file_path=self.file_path,
+-#             datetime_cols=[self.datetime_col],
+-#             sensor_col=self.sensor_col,
+-#             value_col=self.value_col,
+-#             disable_logs=self.disable_logs,
+-
+-#         )
+-#         loader.df_gman = self.gman_df
+-#         df = loader.get_data(add_gman_predictions=self.gman_df is not None)
+-#         self.df_orig = loader.df_orig.copy()
+-
+-#         df = df.sort_values(by=[self.sensor_col, self.datetime_col])
+-
+-#         df, _ = MiscellaneousFeatureEngineer(
+-#             sensor_col=self.sensor_col,
+-#             new_sensor_id_col="sensor_uid",
+-#             weather_cols=[],
+-#         ).transform(df)
+-
+-#         df, _ = DateTimeFeatureEngineer(datetime_col=self.datetime_col).convert_datetime(df)
+-#         df, _ = DateTimeFeatureEngineer(datetime_col=self.datetime_col).add_weekend_columns(df)
+-
+-#         df, _ = AdjacentSensorFeatureAdder(
+-#             sensor_col="sensor_uid",
+-#             datetime_col=self.datetime_col,
+-#             value_col=self.value_col,
+-#             disable_logs=self.disable_logs,
+-#         ).transform(df)
+-
+-#         df, _ = TemporalLagFeatureAdder(
+-#             sensor_col="sensor_uid",
+-#             value_col=self.value_col,
+-#             disable_logs=self.disable_logs,
+-#         ).transform(df)
+-
+-#         df, _ = CongestionFeatureEngineer().transform(df)
+-
+-#         df, _ = TargetVariableCreator(
+-#             sensor_col="sensor_uid",
+-#             value_col=self.value_col,
+-#             gman_col="gman_prediction",
+-#             use_gman=self.gman_correction_as_target,
+-#             horizon=self.horizon,
+-#         ).transform(df)
+-
+-#         # Train-test split
+-#         if "test_set" not in df.columns:
+-#             raise ValueError("Expected 'test_set' column not found in DataFrame.")
+-
+-#         self.df = df.copy()
+-#         self.X_train = df.loc[~df.test_set].drop(columns=["target"])
+-#         self.X_test = df.loc[df.test_set].drop(columns=["target"])
+-#         self.y_train = df.loc[~df.test_set, "target"]
+-#         self.y_test = df.loc[df.test_set, "target"]
+-
+-#         return self.X_train, self.X_test, self.y_train, self.y_test
+-
+-#     def validate_target_variable(self):
+-#         self._log("Validating target variable...")
+-#         df_test = self.df.copy().sort_values(by=["sensor_uid", "datetime"])
+-
+-#         if self.gman_correction_as_target:
+-#             df_test["expected_target"] = (
+-#                 df_test.groupby("sensor_uid")["value"].shift(-self.horizon)
+-#                 - df_test.groupby("sensor_uid")["gman_prediction"].shift(-self.horizon)
+-#             )
+-#         else:
+-#             df_test["expected_target"] = (
+-#                 df_test.groupby("sensor_uid")["value"].shift(-self.horizon)
+-#                 - df_test["value"]
+-#             )
+-
+-#         df_test["target_correct"] = df_test["target"] == df_test["expected_target"]
+-
+-#         if df_test["target_correct"].all():
+-#             self._log("All target values are correct!")
+-#             return True
+-#         else:
+-#             self._log("Some target values are incorrect!")
+-#             return False
++        return X_train, X_test, y_train, y_test
+\ No newline at end of file
+diff --git a/data_processing_old.py b/data_processing_old.py
+deleted file mode 100644
+index cf3e9f4..0000000
+--- a/data_processing_old.py
++++ /dev/null
+@@ -1,1882 +0,0 @@
+-
+-import os
+-import pandas as pd
+-import numpy as np
+-import warnings
+-from sklearn.model_selection import train_test_split
+-from .constants import colnames
+-import random
+-import matplotlib.pyplot as plt
+-import logging
+-from tqdm.auto import tqdm
+-from .helper_utils import get_adjacent_sensors_dict
+-import pickle
+-import time
+-import json
+-import re 
+-# Configure logging
+-logging.basicConfig(
+-    format='%(asctime)s - %(levelname)s - %(message)s',
+-    level=logging.DEBUG  # You can set this to DEBUG, WARNING, etc. as needed
+-)
+-
+-
+-    
+-
+-
+-class TrafficFlowDataProcessing:
+-
+-    """
+-    A class to process and prepare traffic flow data for time-series prediction.
+-    This includes methods for loading, cleaning, feature engineering, and data splitting.
+-    """
+-
+-    def __init__(self, data_path='../data', file_name='estimated_average_speed_selected_timestamps-edited-new.csv', adj_sensors_file_path=None,
+-                 column_names=None, lags=20, spatial_adj=None, horizon=15,
+-                 correlation_threshold=0.01, columns_to_use=None, lags_are_relative=False,
+-                 time_col_name='sensor_time_min', sensor_id_col_name='sensor_uid', gman_correction_as_target=False,smoothing_on_train_set_only = False,
+-                 df_gman=None, random_state=69,use_weather_features=True,flag_outliers=False,adj_sensor_columns_exist=False,lag_columns_exist = False):
+-        """
+-        Initialize data processing parameters.
+-
+-        Parameters:
+-        - file_path (str): Path to the CSV file with traffic data.
+-        - column_names (list): Column names for the data file. If None, defaults to colnames.
+-        - lags (int): Number of temporal lag features to generate.
+-        - spatial_adj (int): Number of spatial adjucent sensors to include.
+-        - correlation_threshold (float): Minimum correlation for feature selection.
+-        - random_state (int): Seed for reproducible train-test split.
+-        """
+-        self.data_path = data_path
+-        self.file_name = file_name
+-        self.horizon = horizon
+-        self.file_path = os.path.join(self.data_path, self.file_name)
+-        self.csv_column_names = column_names if column_names else colnames  # Use default if None
+-        self.lags = lags
+-        self.smoothing_on_train_set_only = smoothing_on_train_set_only
+-        self.spatial_adj = spatial_adj
+-        self.adj_sensor_columns_exist = adj_sensor_columns_exist
+-        self.lag_columns_exist = lag_columns_exist
+-        if self.spatial_adj is not None:
+-            with open(os.path.join(data_path,'downstream_dict.json'), 'r') as f:
+-                self.downstream_sensor_dict = json.load(f)
+-            with open(os.path.join(data_path,'upstream_dict.json'), 'r') as f:
+-                self.upstream_sensor_dict = json.load(f)
+-                
+-        self.use_weather_features = use_weather_features
+-
+-        self.correlation_threshold = correlation_threshold
+-        self.lags_are_relative = lags_are_relative
+-        self.random_state = random_state
+-        self.flag_outliers = flag_outliers
+-        self.adj_sensors_file_path = adj_sensors_file_path
+-        # The col name after transforming the column sensor_uid
+-        self.sensor_id_col_name = sensor_id_col_name
+-        self.time_col_name = time_col_name
+-        self.previous_plotted_sensors = set()
+-        self.gman_correction_as_target = gman_correction_as_target
+-        self.df = None
+-        self.df_orig = None
+-        self.test_size = None
+-        self.df_gman = df_gman
+-        self.cache = {}
+-        self.X_train, self.X_test, self.y_train, self.y_test = None, None, None, None
+-        self.columns_weather = ['Storm_relative_helicity_height_above_ground_layer',
+-                                'U-Component_Storm_Motion_height_above_ground_layer',
+-                                'Wind_speed_gust_surface', 'u-component_of_wind_maximum_wind',
+-                                'v-component_of_wind_height_above_ground']
+-        if columns_to_use is None:
+-            # Define features dynamically based on existing columns (if features are not selected based on correlation)
+-            self.columns_to_use = [
+-                self.sensor_id_col_name, 'value', 'longitude', 'latitude',
+-                'Storm_relative_helicity_height_above_ground_layer',
+-                'U-Component_Storm_Motion_height_above_ground_layer',
+-                'Wind_speed_gust_surface', 'u-component_of_wind_maximum_wind',
+-                'v-component_of_wind_height_above_ground',
+-                       'Per_cent_frozen_precipitation_surface',
+-       'Precipitable_water_entire_atmosphere_single_layer',
+-       'Precipitation_rate_surface_3_Hour_Average',
+-       'Total_precipitation_surface_3_Hour_Accumulation',
+-       'Categorical_Rain_surface_3_Hour_Average',
+-       'Categorical_Freezing_Rain_surface_3_Hour_Average',
+-       'Categorical_Ice_Pellets_surface_3_Hour_Average',
+-       'Categorical_Snow_surface_3_Hour_Average',
+-       'Convective_Precipitation_Rate_surface_3_Hour_Average',
+-       'Convective_precipitation_surface_3_Hour_Accumulation',
+-       'V-Component_Storm_Motion_height_above_ground_layer',
+-       'Geopotential_height_highest_tropospheric_freezing',
+-       'Relative_humidity_highest_tropospheric_freezing', 'Ice_cover_surface',
+-       'Snow_depth_surface',
+-       'Water_equivalent_of_accumulated_snow_depth_surface',
+-       'u-component_of_wind_height_above_ground',
+-            ]
+-            self.columns_to_use = set(self.columns_to_use)
+-            self.columns_to_use = list(self.columns_to_use)
+-            # self.columns_to_use.remove('incremental_id')
+-            self.columns_to_use.append('date')
+-
+-        else:
+-            self.columns_to_use = columns_to_use
+-
+-    def load_data(self, nrows=None, sort_by_datetime=True):
+-        """Loads and preprocesses raw data, converting 'date' column to datetime and sorting by it."""
+-
+-        # load df with pyarrow for faster loading, if nrows is specified, then you can't use pyarrow
+-        if nrows is None:
+-            self.df = pd.read_csv(self.file_path, names=self.csv_column_names)
+-        else:
+-            logging.info(f"selecting df with {nrows} nrows.")
+-            self.df = pd.read_csv(
+-                self.file_path, names=self.csv_column_names, nrows=nrows)
+-        self.df_orig = self.df.copy()
+-        rows_that_target_var_is_nan = self.df['value'].isna().sum()
+-        if rows_that_target_var_is_nan > 0:
+-            warnings.warn(
+-                f'Target variable (column "value") is Nan {rows_that_target_var_is_nan} times.')
+-        self.df['datetime'] = pd.to_datetime(self.df['date'])
+-        if sort_by_datetime:
+-            self.df = self.df.sort_values('datetime').reset_index(drop=True)
+-            logging.info(f"df got sorted by datetime.")
+-
+-        if self.df_gman is not None:
+-            self.add_gman_predictions()
+-            
+-            
+-    def drop_weather_features(self):
+-        logging.info("Dropping weather-related features.")
+-        
+-        # Drop from columns_to_use FIRST
+-        before = set(self.columns_to_use)
+-        self.columns_to_use = [col for col in self.columns_to_use if col not in self.columns_weather]
+-        after = set(self.columns_to_use)
+-        dropped = list(before - after)
+-        logging.info(f"Updated columns_to_use. Dropped: {dropped}")
+-
+-        # Now drop from X_train / X_test
+-        if self.X_train is not None and self.X_test is not None:
+-            self.X_train.drop(columns=dropped, inplace=True, errors='ignore')
+-            self.X_test.drop(columns=dropped, inplace=True, errors='ignore')
+-            logging.info(f"Also dropped from X_train/X_test: {dropped}")
+-        else:
+-            logging.warning("X_train/X_test not defined at time of drop_weather_features().")
+-
+-    def add_gman_predictions(self):
+-        """Merges gman data with the main DataFrame and drops rows with missing gman_predictions.
+-
+-        Logs the total number of rows dropped, and the minimum and maximum dates for these dropped rows.
+-        """
+-        logging.info("Merging gman data.")
+-
+-        # Ensure sensor_id is of categorical type for both DataFrames
+-        self.df['sensor_id'] = self.df['sensor_id'].astype('category')
+-        self.df_gman['sensor_id'] = self.df_gman['sensor_id'].astype(
+-            'category')
+-
+-        # Set a multi-index on both DataFrames
+-        self.df = self.df.set_index(['date', 'sensor_id'])
+-        self.df_gman = self.df_gman.set_index(['date', 'sensor_id'])
+-
+-        # Join the DataFrames (faster with indexed DataFrames)
+-        self.df = self.df.join(self.df_gman, how='left').reset_index()
+-
+-        # Identify rows with missing gman_predictions
+-        missing_rows = self.df[self.df['gman_prediction'].isna()]
+-        if not missing_rows.empty:
+-            dropped_count = missing_rows.shape[0]
+-            min_date = missing_rows['date'].min()
+-            max_date = missing_rows['date'].max()
+-            logging.info(
+-                f"Dropping {dropped_count} rows with missing 'gman_prediction ({dropped_count/self.df['sensor_id'].nunique()} rows per sensor)'. "
+-                f"Date range: {min_date} to {max_date}."
+-            )
+-            # Drop rows where gman_predictions is NaN
+-            self.df = self.df.dropna(subset=['gman_prediction'])
+-        else:
+-            logging.info("No rows dropped for missing 'gman_predictions'.")
+-
+-    def diagnose_extreme_changes(self, relative_threshold=0.7):
+-        """
+-        Identifies and logs extreme changes in speed between consecutive timestamps for each sensor.
+-
+-        Args:
+-            relative_threshold (float): Threshold for flagging changes as extreme.
+-        """
+-        logging.info(
+-            f"Diagnosing extreme speed changes (for relative threshold: {relative_threshold*100}% of immediate change)...")
+-
+-        self.df['relative_speed_change'] = self.df.groupby('sensor_id')[
+-            'value'].pct_change().abs()
+-
+-        extreme_changes = self.df[self.df['relative_speed_change']
+-                                  > relative_threshold]
+-
+-        num_extremes = extreme_changes.shape[0]
+-        total_points = self.df.shape[0]
+-        perc_extremes = (num_extremes / total_points) * 100
+-
+-        logging.info(
+-            f"Total extreme changes: {num_extremes} ({perc_extremes:.2f}% of data)")
+-
+-        # Cleanup
+-        self.df.drop(columns=['relative_speed_change'], inplace=True)
+-
+-    def filter_extreme_changes(self, relative_threshold=0.7):
+-        """
+-        Filters out extreme relative changes between consecutive speeds.
+-
+-        Args:
+-            relative_threshold (float): Threshold to flag changes as abnormal (default: 0.7).
+-        """
+-
+-        logging.info(
+-            f"Filtering extreme speed changes (> {relative_threshold*100:.0f}% change).")
+-
+-        self.df['relative_speed_change'] = self.df.groupby('sensor_id')[
+-            'value'].pct_change().abs()
+-        extreme_changes = self.df['relative_speed_change'] > relative_threshold
+-
+-        logging.info(f"Extreme changes detected: {extreme_changes.sum()}")
+-
+-        # Set outliers to NaN and interpolate
+-        self.df.loc[extreme_changes, 'value'] = np.nan
+-        self.df['value'] = self.df.groupby('sensor_id')['value'].transform(
+-            lambda x: x.interpolate().ffill().bfill())
+-
+-        self.df.drop(columns=['relative_speed_change'], inplace=True)
+-
+-    
+-   
+-    def smooth_speeds(self, window_size=3):
+-        logging.info("Applying rolling median smoothing to speed values.")
+-        
+-        if self.smoothing_on_train_set_only:
+-            print("Applying smoothing only on training set rows.")
+-            train_set = self.df.loc[self.df['test_set'] == False].copy()
+-            print(f'in train set,dates are from {train_set["date"].min()} to {train_set["date"].max()}')
+-            print(f'in train set, nr of sensors are {train_set["sensor_id"].nunique()}')
+-            self._apply_smoothing(self.df.loc[self.df['test_set'] == False],window_size)
+-            self._apply_smoothing(self.df_for_ML.loc[self.df['test_set'] == False],window_size)
+-        else:
+-            self._apply_smoothing(self.df,window_size)
+-            self._apply_smoothing(self.df_for_ML,window_size)
+-            
+-            
+-    def _apply_smoothing(self, df, window_size):
+-        
+-        print(f"Applying smoothing on dates from {df['date'].min()} to {df['date'].max()}")
+-        df['value'] = df.groupby('sensor_id')['value'].transform(
+-                lambda x: x.rolling(window=window_size, center=False, min_periods=1).median())
+-    
+-        
+-    
+-
+-    def load_data_parquet(self,df=None, nrows=None):
+-        """Reads the parquet file and selects nr of rows (it's already sorted by datetime)."""
+-        
+-        if df is None:
+-            self.df = pd.read_parquet(self.file_path, engine='pyarrow')
+-
+-            logging.info(f"Reading parquet file: {self.file_path}")
+-            self.df = pd.read_parquet(self.file_path, engine='pyarrow')
+-        else:
+-            self.df = df
+-
+-        # Ensure that date and datetime columns are present and converted to datetime
+-        if 'date' in self.df.columns:
+-            self.df['date'] = pd.to_datetime(self.df['date'])
+-            self.df['datetime'] = pd.to_datetime(self.df['date'])
+-        elif 'datetime' in self.df.columns:
+-            self.df['datetime'] = pd.to_datetime(self.df['datetime'])
+-            self.df['date'] = self.df['datetime']
+-
+-        else:
+-            raise ValueError(
+-                "The 'date' or 'datetime' column is missing. Ensure the data is preprocessed with datetime conversion.")
+-
+-        logging.info(f"df['date'] converted to datetime.")
+-        self.df = self.df.sort_values(
+-            by=['date','sensor_id']).reset_index(drop=True)
+-        logging.info(f"df got sorted by datetime.")
+-        
+-        self.df['value_original'] = self.df['value']  
+-
+-        if nrows is not None:
+-            nrows = int(nrows)
+-            self.df = self.df.iloc[:nrows]
+-        rows_that_target_var_is_nan = self.df['value'].isna().sum()
+-        if rows_that_target_var_is_nan > 0:
+-            warnings.warn(
+-                f'Target variable (column "value") is Nan {rows_that_target_var_is_nan} times.')
+-
+-        if nrows is not None:
+-            nrows = int(nrows)
+-            self.df = self.df.iloc[:nrows]
+-
+-        if self.df_gman is not None:
+-            self.add_gman_predictions()
+-
+-    def preprocess_data(self, select_relevant_cols=False):
+-        """Run the data preprocessing pipeline to clean and prepare the data."""
+-        logging.info("Starting preprocessing of data.")
+-        self._map_sensor_ids()
+-        self._discard_sensor_uids_w_uncommon_nrows()
+-        # self._discard_misformatted_values()
+-        self._apply_clean_and_convert_to_float32()
+-        if select_relevant_cols:
+-            self._select_relevant_columns()
+-        else:
+-            self._select_fixed_columns()
+-        logging.info("Preprocessing completed.")
+-
+-    def _map_sensor_ids(self):
+-        """Map unique sensor IDs to integers for categorical feature conversion."""
+-        logging.info("Mapping sensor IDs to integers.")
+-
+-        nr_unique_sensors = self.df['sensor_id'].nunique()
+-
+-        self.df[self.sensor_id_col_name] = self.df['sensor_id'].map(
+-            {s: i for i, s in enumerate(set(self.df['sensor_id']))})
+-        # Log the number of sensors enumerated
+-        logging.info(
+-            f"Enumerated {nr_unique_sensors} sensors, starting from 1.")
+-        # Ensure `sensor_uid` is still numeric
+-        self.df[self.sensor_id_col_name] = self.df[self.sensor_id_col_name].astype(
+-            int)
+-
+-    def _discard_misformatted_values(self):
+-        """DEPRECATED. Use _clean_and_convert_to_float16() instead.
+-        This method is deprecated so that strings of type eg '101 . 315' are converted to 101.315 instead of being dropped."""
+-        """Remove rows with misformatted values and convert 'value' column to float. """
+-        logging.info("Discarding misformatted values in 'value' column.")
+-
+-        # Count the number of rows before filtering
+-        initial_row_count = len(self.df)
+-        self.df['value'] = pd.to_numeric(self.df['value'], errors='coerce')
+-        self.df = self.df.dropna(subset=['value'])
+-        # Count the number of rows after filtering
+-        final_row_count = len(self.df)
+-
+-        # Log the number of rows dropped
+-        rows_dropped = initial_row_count - final_row_count
+-        logging.info(
+-            f"Discarded {rows_dropped} rows with misformatted values in 'value' column.")
+-
+-    def _clean_and_convert_to_float32(self, value):
+-        """
+-        Cleans and converts a single value to float16 format.
+-
+-        This method performs the following steps:
+-        - Checks if the input is already a float; if so, rounds it to two decimal places and converts it to float32.
+-        - If the input is a string, replaces spaces with dots and attempts to convert it to float16.
+-        - Handles misformatted or invalid values by returning None.
+-
+-        Parameters:
+-        - value: The input value to be cleaned and converted (can be a float or a string).
+-
+-        Returns:
+-        - np.float16: The cleaned and converted value.
+-        - None: If the value cannot be converted to float32.
+-        """
+-
+-        try:
+-            # Check if value is already a float
+-            if isinstance(value, float):
+-                return np.float32(round(value, 2))
+-            # Replace space with a dot and convert to float16
+-            return np.float32(round(float(value.replace(' ', '.')), 2))
+-        except (ValueError, AttributeError):
+-            # If conversion fails, return None or NaN
+-            return None
+-
+-    def _apply_clean_and_convert_to_float32(self):
+-        """
+-        Applies the `_clean_and_convert_to_float32` method to the 'value' column in the DataFrame.
+-
+-        This method iterates over the 'value' column in `self.df`, applying the cleaning
+-        and conversion logic to ensure all values are properly formatted and converted
+-        to float16 format. Invalid or misformatted values are replaced with NaN.
+-
+-        Raises:
+-        - AttributeError: If `self.df` does not have a 'value' column.
+-
+-        Notes:
+-        - Ensure the DataFrame is loaded into `self.df` before calling this method.
+-        """
+-        logging.info("Cleaning and converting 'value' column to float32.")
+-        len_df_prev = len(self.df)
+-        self.df = self.df.dropna(subset=['value'])
+-        len_df_after = len(self.df)
+-        logging.info(
+-            f"Discarded {len_df_prev - len_df_after} rows with NaN values in 'value' column. (method _clean_and_convert_to_float32())")
+-
+-        self.df['value'] = self.df['value'].apply(
+-            self._clean_and_convert_to_float32)
+-
+-    def align_sensors_to_common_timeframe(self):
+-        """
+-        Align all sensors to the same timeframe based on the sensor with the fewest recordings.
+-        This ensures all sensors have data for the same timestamps.
+-        This method should be used if only a subset of the dataframe is to be read.
+-        """
+-        logging.info(
+-            "Aligning sensors to a common timeframe based on the sensor with the fewest recordings (becase a subset of ).")
+-
+-        # Count the number of recordings for each sensor
+-        sensor_counts = self.df.groupby('sensor_id').size()
+-
+-        # Identify the sensor with the fewest recordings
+-        min_recording_sensor = sensor_counts.idxmin()
+-        min_recording_count = sensor_counts.min()
+-
+-        # Get the timeframe for the sensor with the fewest recordings
+-        common_timeframe = self.df[self.df['sensor_id']
+-                                   == min_recording_sensor]['datetime']
+-        min_time = common_timeframe.min()
+-        max_time = common_timeframe.max()
+-
+-        # Filter the DataFrame to include only data within the common timeframe for all sensors
+-        original_row_count = len(self.df)
+-        self.df = self.df[(self.df['datetime'] >= min_time)
+-                          & (self.df['datetime'] <= max_time)]
+-        filtered_row_count = len(self.df)
+-
+-        logging.info(
+-            f"Aligned all sensors to the common timeframe: {min_time} to {max_time}.")
+-        logging.info(
+-            f"Rows before alignment: {original_row_count}, Rows after alignment: {filtered_row_count}.")
+-
+-    def _select_relevant_columns(self, method=None):
+-        """Filter out columns with low correlation to the target variable 'value'."""
+-        logging.info(
+-            f"Selecting relevant columns using correlation method: {method or 'default'}.")
+-        accepted_corr_method = ['pearson', 'spearman', 'kendall']
+-        df_dropped = self.df.drop(['sensor_id', 'date'], axis=1).dropna()
+-        df_dropped_clean = df_dropped.dropna()
+-        if method is None:
+-            correlations = df_dropped_clean.corr()['value'].abs()
+-        else:
+-            assert method in accepted_corr_method, f'The correlation method {method} (input variable) must be one of the following: {accepted_corr_method}.'
+-            correlations = df_dropped_clean.corr(method)['value'].abs()
+-
+-        relevant_columns = correlations[correlations >=
+-                                        self.correlation_threshold].index
+-        logging.info(
+-            f'Selected relevant columns based on {method} correlation are now : {relevant_columns}')
+-        new_columns_to_use = [self.sensor_id_col_name,
+-                              'date'] + list(relevant_columns)
+-        self.columns_to_use = new_columns_to_use
+-
+-    def _select_fixed_columns(self):
+-        """Select fixed columns based on the original notebook provided."""
+-        logging.info("Selecting fixed columns for modeling.")
+-
+-   
+-
+-    def convert_datetime(self):
+-        """Extract hour, day, and month from the datetime column and create new columns."""
+-        logging.info(
+-            "Extracting hour, day, and month from the datetime column.")
+-        if 'datetime' not in self.df.columns:
+-            raise ValueError(
+-                "The 'datetime' column is missing. Ensure the data is preprocessed with datetime conversion.")
+-
+-        # Create new columns
+-        self.df['hour'] = self.df['datetime'].dt.hour
+-        self.df['day'] = self.df['datetime'].dt.dayofweek
+-        # self.df['month'] = self.df['datetime'].dt.month
+-
+-        # Add new columns to `columns_to_use`
+-        # self.columns_to_use += ['hour', 'day', 'month']
+-        self.columns_to_use += ['hour', 'day']
+-
+-    def create_target_variable_common_part(self):
+-        """Generate initial code for target variable."""
+-        logging.info("Creating target variable.")
+-        
+-
+-        # Initial target is the delta speed prediction
+-        self.df_for_ML['target'] = self.df_for_ML.groupby(self.sensor_id_col_name)[
+-            'value'].shift(-self.horizon) - self.df_for_ML['value']
+-        self.df_for_ML['target_total_speed'] = self.df_for_ML.groupby(self.sensor_id_col_name)[
+-            'value'].shift(-self.horizon)
+-        self.df_for_ML['target_speed_delta'] = self.df_for_ML['target']
+-
+-        # Add the gman prediction in the prediction horizon
+-        if self.df_gman is not None:
+-            self.df_for_ML['target_gman_prediction'] = self.df_for_ML.groupby(
+-                self.sensor_id_col_name)['gman_prediction'].shift(-self.horizon)
+-            # Update the columns to use with the new feature
+-            # if not self.gman_correction_as_target:
+-            self.columns_to_use += ['target_gman_prediction']
+-
+-    def create_target_variable(self):
+-        """Generate target variable as speed delta based on specified horizon."""
+-
+-        self.create_target_variable_common_part()
+-        self.df_for_ML = self.df_for_ML.dropna(subset=['target'])
+-
+-    def create_target_variable_as_gman_error(self):
+-        """Generate target variable as gman error prediction. You need to add the error prediction to the gman prediction in order to get the new target prediction."""
+-        self.create_target_variable_common_part()
+-        self.df_for_ML['target'] = self.df_for_ML['target_total_speed'] - \
+-            self.df_for_ML['target_gman_prediction']
+-        self.df_for_ML = self.df_for_ML.dropna(subset=['target'])
+-        # check that the target is indeed the gman error
+-        target_is_gman_error_check = (self.df_for_ML['target_total_speed'] - (
+-            self.df_for_ML['target'] + self.df_for_ML['target_gman_prediction'])).sum()
+-        if target_is_gman_error_check != 0:
+-            raise ValueError(
+-                "The target variable is not the gman error. Please check the code.")
+-    
+-    def check_temporal_lags(self):
+-        """
+-        Verifies that only the expected temporal lag columns (standard or relative) are present.
+-        Drops any excess lag columns beyond self.lags in both self.df and self.df_for_ML.
+-        """
+-        logging.info("Checking temporal lag columns.")
+-
+-        if self.lags_are_relative:
+-            prefix = "relative_diff_lag"
+-        else:
+-            prefix = "lag"
+-
+-        expected_lag_cols = {f"{prefix}{i+1}" for i in range(self.lags)}
+-
+-        for df_name in ['df', 'df_for_ML']:
+-            df_obj = getattr(self, df_name)
+-            if df_obj is None:
+-                continue
+-
+-            existing_lag_cols = {col for col in df_obj.columns if col.startswith(prefix)}
+-            cols_to_drop = existing_lag_cols - expected_lag_cols
+-
+-            if cols_to_drop:
+-                df_obj.drop(columns=list(cols_to_drop), inplace=True)
+-                setattr(self, df_name, df_obj)
+-                logging.info(f"{df_name}: Dropped extra lag columns: {sorted(cols_to_drop)}")
+-
+-                # Clean from columns_to_use as well
+-                self.columns_to_use = [col for col in self.columns_to_use if col not in cols_to_drop]
+-            else:
+-                logging.info(f"{df_name}: No extra lag columns found.")
+-                logging.info("No extra lag columns found to drop.")    
+-            
+-    def check_adjucent_sensors(self):
+-        """
+-        Checks and drops excess adjacent sensor columns beyond self.spatial_adj.
+-
+-        For example, if self.spatial_adj = 2, then 'downstream_sensor_3', 'upstream_sensor_3', etc.
+-        will be dropped from self.df_for_ML and removed from self.columns_to_use if present.
+-        """
+-        if not hasattr(self, 'spatial_adj') or self.spatial_adj is None:
+-            logging.warning("self.spatial_adj is not defined. Skipping check.")
+-            return
+-
+-        max_allowed = self.spatial_adj
+-        columns_to_drop = []
+-
+-        for col in self.df_for_ML.columns:
+-            match = re.match(r'(upstream|downstream)_sensor_(\d+)', col)
+-            if match:
+-                idx = int(match.group(2))
+-                if idx > max_allowed:
+-                    columns_to_drop.append(col)
+-
+-        # Drop from DataFrame
+-        self.df_for_ML.drop(columns=columns_to_drop, inplace=True, errors='ignore')
+-
+-        # Also drop from columns_to_use if present
+-        self.columns_to_use = [col for col in self.columns_to_use if col not in columns_to_drop]
+-
+-        logging.info(f"Dropped excess adjacent sensor columns: {columns_to_drop}")
+-    
+-    def find_outliers(self, lower_bound=0.01, upper_bound=0.99):
+-        """
+-        Adds a binary 'is_outlier' column marking extreme outliers in 'value'.
+-
+-        Outliers are detected using percentiles from the training set.
+-        This column is added to df_for_ML, and the split X_train/X_test is updated to include it.
+-        """
+-        logging.info("Flagging outliers in training set.")
+-
+-        # Compute percentiles from training data
+-        lower_bound_value = self.X_train['value'].quantile(lower_bound)
+-        upper_bound_value = self.X_train['value'].quantile(upper_bound)
+-        logging.info(f"Using outlier thresholds: lower={lower_bound_value}, upper={upper_bound_value}")
+-
+-        # Add the is_outlier flag to df_for_ML
+-        self.df_for_ML['is_outlier'] = ((self.df_for_ML['value'] < lower_bound_value) | 
+-                                        (self.df_for_ML['value'] > upper_bound_value)).astype(int)
+-
+-        # Add to feature list if not already
+-        if 'is_outlier' not in self.columns_to_use:
+-            self.columns_to_use.append('is_outlier')
+-
+-        # Ensure X_train and X_test are updated with this column
+-        if 'test_set' in self.df_for_ML.columns:
+-            self.X_train['is_outlier'] = self.df_for_ML.loc[self.X_train.index, 'is_outlier'].values
+-            self.X_test['is_outlier'] = self.df_for_ML.loc[self.X_test.index, 'is_outlier'].values
+-        else:
+-            raise RuntimeError("Missing 'test_set' column in df_for_ML. You must split data before calling find_outliers().")
+-
+-        logging.info(f"Flagged {self.df_for_ML['is_outlier'].sum()} outliers ({self.df_for_ML['is_outlier'].mean()*100:.2f}%) in total.")
+-        
+-    def prepare_data(self, select_relevant_cols=False, nrows=None, sort_by_datetime=True, use_weekend_var=True):
+-        """Run the full data preparation pipeline without splitting."""
+-        logging.info('Preparing the dataset')
+-
+-        self.preprocess_data(select_relevant_cols=select_relevant_cols)
+-        self.convert_datetime()
+-        if use_weekend_var:
+-            self.add_weekend_columns()
+-        self.df_for_ML = self.df.copy()
+-
+-
+-
+-    def add_bottleneck_columns(self, hour_start=6, hour_end=19, quantile_threshold=0.9, quantile_percentage=0.65):
+-        """
+-        Adds a binary 'is_congested' column indicating traffic congestion status.
+-
+-        The congestion threshold is computed only using training data to avoid data leakage.
+-        Congestion is defined as speed below 65% of the 90th percentile of speeds between 6 AM and 7 PM.
+-            """
+-        logging.info(
+-            "Adding congestion ('is_congested') column based on training set thresholds.")
+-        congestion_thr = self.df_for_ML[(self.df_for_ML['hour'] >= hour_start) & (
+-            self.df_for_ML['hour'] <= hour_end) & (~self.df_for_ML['test_set'])].groupby('sensor_id')['value'].quantile(quantile_threshold)*quantile_percentage
+-
+-        # Map the thresholds to each row in the original DataFrame based on sensor_id
+-        thresholds = self.df_for_ML['sensor_id'].map(congestion_thr)
+-
+-        # Create a new column 'is_below_threshold' that is True if 'value' is less than the threshold for that sensor_id, False otherwise
+-        self.df_for_ML['is_congested'] = (
+-            self.df_for_ML['value'] < thresholds).astype(int)
+-        self.columns_to_use += ['is_congested']
+-
+-    def split_data(self, test_size):
+-        """Split the data into training and testing sets based on defined features."""
+-        logging.info('Splitting the dataset.')
+-        logging.info(
+-            f"columns to use are: {self.columns_to_use}, in split_data method.")
+-        X = self.df_for_ML[self.columns_to_use]
+-        y = self.df_for_ML['target']
+-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
+-            X, y, test_size=test_size, shuffle=False, random_state=self.random_state
+-        )
+-
+-    
+-
+-    def split_data_by_timestamps(self):
+-        """
+-        Splits the dataset into train and test sets strictly based on the 'test_set' flag.
+-        
+-        This ensures:
+-        - The train/test split is **exactly the same** as the one defined in `flag_train_test_set()`.
+-        - No new timestamp-based logic is introduced.
+-        """
+-        logging.info('Splitting dataset based on pre-flagged "test_set" column.')
+-
+-        # Use the existing test_set flag
+-        train_mask = self.df_for_ML['test_set'] == False
+-        test_mask = self.df_for_ML['test_set'] == True
+-
+-        # Apply the train-test split
+-        self.X_train = self.df_for_ML.loc[train_mask, self.columns_to_use].copy()
+-        self.X_test = self.df_for_ML.loc[test_mask, self.columns_to_use].copy()
+-        self.y_train = self.df_for_ML.loc[train_mask, 'target'].copy()
+-        self.y_test = self.df_for_ML.loc[test_mask, 'target'].copy()
+-
+-        # Ensure consistency
+-        assert self.df.loc[self.X_test.index, 'test_set'].all(), "Mismatch: Some test rows were not flagged."
+-        assert not self.df.loc[self.X_train.index, 'test_set'].any(), "Mismatch: Some train rows were incorrectly flagged."
+-        assert self.df_for_ML.loc[self.X_test.index, 'test_set'].all(), "Mismatch in df_for_ML: Some test rows were not flagged."
+-        assert not self.df_for_ML.loc[self.X_train.index, 'test_set'].any(), "Mismatch in df_for_ML: Some train rows were incorrectly flagged."
+-
+-        logging.info(
+-            f"Train set: {self.df_for_ML.loc[train_mask, 'date'].min()} to {self.df_for_ML.loc[train_mask, 'date'].max()}")
+-        logging.info(
+-            f"Test set: {self.df_for_ML.loc[test_mask, 'date'].min()} to {self.df_for_ML.loc[test_mask, 'date'].max()}")
+-
+-    def add_time_column(self, sort_by_datetime=False):
+-        """Adds time column for the sensors."""
+-        self.df = self.df.sort_values(
+-            ['sensor_id', 'datetime']).reset_index(drop=True)
+-
+-        # Add the 'time' column as the difference in minutes (dt)
+-        self.df[self.time_col_name] = self.df.groupby(
+-            'sensor_id')['datetime'].diff().dt.total_seconds() / 60
+-        # ensure the first value of each sensor is 0
+-        self.df[self.time_col_name].fillna(0, inplace=True)
+-        self.df[self.time_col_name] = self.df.groupby(
+-            'sensor_id')[self.time_col_name].cumsum()
+-        self.df = self.df.sort_values('datetime').reset_index(drop=True)
+-
+-    def add_weekend_columns(self):
+-        """Add columns indicating whether the date is a Saturday or Sunday."""
+-        logging.info("Adding weekend columns for Saturday and Sunday.")
+-        self.df['is_saturday'] = self.df['datetime'].dt.dayofweek == 5  # Saturday
+-        self.df['is_sunday'] = self.df['datetime'].dt.dayofweek == 6  # Sunday
+-        self.df['is_saturday'] = self.df['is_saturday'].astype(int)
+-        self.df['is_sunday'] = self.df['is_sunday'].astype(int)
+-        self.columns_to_use += ['is_saturday']
+-        self.columns_to_use += ['is_sunday']
+-        # logging.info(f"columns to use are: {self.columns_to_use}, after adding weekend")
+-
+-    def add_hour_column(self):
+-        """Add a column with the hour of the day extracted from the datetime column."""
+-        logging.info("Adding hour column to the DataFrame.")
+-        if 'datetime' not in self.df.columns:
+-            raise ValueError(
+-                "The 'datetime' column is missing. Ensure the data is preprocessed with datetime conversion.")
+-
+-        self.df['hour'] = self.df['datetime'].dt.hour
+-        self.columns_to_use += ['hour']
+-
+-    def _discard_sensor_uids_w_uncommon_nrows(self):
+-        """Remove rows where the sensor_uid group size is not equal to the most common size."""
+-        logging.info('Discarding sensor ids with uncommon nr of rows.')
+-        # Calculate the group sizes
+-        group_sizes = self.df.groupby(self.sensor_id_col_name).size()
+-
+-        # Find the most common group size
+-        most_common_size = group_sizes.mode().iloc[0]
+-
+-        # Identify sensor_uids with the most common size
+-        valid_sensors = group_sizes[group_sizes == most_common_size].index
+-
+-        # Count sensors
+-        total_sensors = len(group_sizes)
+-        valid_sensor_count = len(valid_sensors)
+-        discarded_sensor_count = total_sensors - valid_sensor_count
+-
+-        # Print details
+-        logging.info(f"Most common group size (mode): {most_common_size}")
+-        logging.info(f"Number of sensors with this size: {valid_sensor_count}")
+-        logging.info(f"Number of sensors discarded: {discarded_sensor_count}")
+-
+-        # Filter the DataFrame to include only rows with valid sensor_uids
+-        initial_row_count = len(self.df)
+-        self.df = self.df[self.df[self.sensor_id_col_name].isin(valid_sensors)]
+-        final_row_count = len(self.df)
+-
+-        logging.info(
+-            f"Discarded {initial_row_count - final_row_count} rows with uncommon sensor_uid group sizes.")
+-
+-    def get_train_test_split(self, reset_index=False):
+-        """Return train and test data splits."""
+-
+-        if reset_index:
+-            for dataset in [self.X_train, self.X_test, self.y_train, self.y_test]:
+-                dataset.reset_index(drop=True, inplace=True)
+-        return self.X_train, self.X_test, self.y_train, self.y_test
+-
+-    def assert_valid_filter_method_and_params(self, filter_method, filter_params):
+-        """
+-        Validates the filtering method and parameters for preprocessing.
+-
+-        Args:
+-            filter_method (str or None): The filtering method ('threshold', 'smoothing', or None).
+-            filter_params (dict or None): Parameters for the filtering method.
+-
+-        Raises:
+-            AssertionError: If provided method or parameters are invalid.
+-        """
+-
+-        valid_methods = [None, 'threshold', 'smoothing']
+-        assert filter_method in valid_methods, \
+-            f"Invalid filter_method '{filter_method}'. Choose from {valid_methods}."
+-
+-        if filter_method is None:
+-            assert filter_params is None or filter_params == {}, \
+-                "filter_params must be None or empty if filter_method is None."
+-
+-        elif filter_method == 'threshold':
+-            assert filter_params is not None and 'relative_threshold' in filter_params and len(filter_params) == 1, \
+-                "For 'threshold' method, filter_params must be {'relative_threshold': float}."
+-            assert isinstance(filter_params['relative_threshold'], float), \
+-                "relative_threshold must be a float (e.g., 0.7)."
+-
+-        elif filter_method == 'smoothing':
+-            assert filter_params is not None and 'window_size' in filter_params and len(filter_params) == 1, \
+-                "For smoothing method, filter_params must be {'window_size': int}."
+-            assert isinstance(filter_params['window_size'], int), \
+-                "window_size must be an integer."
+-                
+-                
+-    
+-    def add_adjacent_sensors(self, normalize_by_distance=False,fill_nans_value=-1):
+-        """
+-        Adds features for adjacent sensors to the DataFrame in a vectorized manner.
+-        
+-        For each sensor and for each spatial adjacency (up to self.spatial_adj), this method:
+-        - Creates mapping dictionaries to look up the downstream/upstream sensor IDs (and distances)
+-        - Pivots the DataFrame so that each row (date) allows fast lookup of a sensor's value
+-        - Uses a vectorized lookup to assign the adjacent sensor's value for each row.
+-        
+-        Parameters:
+-        normalize_by_distance (bool): If True, divides the adjacent sensor's value by its corresponding distance.
+-        """
+-        logging.info("Starting to add adjacent sensor features (optimized).")
+-        
+-        
+-        
+-        # Initialize empty columns for each spatial adjacency and update the feature list.
+-        for i in range(self.spatial_adj):
+-            self.df_for_ML[f'downstream_sensor_{i+1}'] = np.nan
+-            self.df_for_ML[f'upstream_sensor_{i+1}'] = np.nan
+-            self.columns_to_use += [f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}']
+-        
+-        logging.info("Pivoting the DataFrame for fast lookups by date and sensor_id.")
+-        # Pivot the DataFrame for fast date-sensor lookups.
+-        pivot = self.df_for_ML.pivot(index='date', columns='sensor_id', values='value')
+-        logging.info(f"Pivot table shape: {pivot.shape}")
+-        
+-        unique_sensors = self.df_for_ML['sensor_id'].unique()
+-        logging.info(f"Number of unique sensors: {len(unique_sensors)}")
+-        
+-        # Process each spatial index (e.g. 1st, 2nd, etc. adjacent sensor)
+-        for i in range(self.spatial_adj):
+-            
+-            logging.info(f"Processing adjacent sensor index: {i+1}")
+-            # Build mapping dictionaries for this spatial level.
+-            downstream_map = {}
+-            downstream_dist_map = {}
+-            upstream_map = {}
+-            upstream_dist_map = {}
+-            
+-            for sensor in unique_sensors:
+-                # Downstream mapping
+-                if sensor in self.downstream_sensor_dict:
+-                    ds_list = self.downstream_sensor_dict[sensor]['downstream_sensor']
+-                    ds_dist_list = self.downstream_sensor_dict[sensor]['downstream_distance']
+-                    if i < len(ds_list) and ds_list[i] is not None:
+-                        downstream_map[sensor] = ds_list[i]
+-                        downstream_dist_map[sensor] = ds_dist_list[i]
+-                    else:
+-                        downstream_map[sensor] = None
+-                        downstream_dist_map[sensor] = np.nan
+-                else:
+-                    downstream_map[sensor] = None
+-                    downstream_dist_map[sensor] = np.nan
+-
+-                # Upstream mapping
+-                if sensor in self.upstream_sensor_dict:
+-                    us_list = self.upstream_sensor_dict[sensor]['upstream_sensor']
+-                    us_dist_list = self.upstream_sensor_dict[sensor]['upstream_distance']
+-                    if i < len(us_list) and us_list[i] is not None:
+-                        upstream_map[sensor] = us_list[i]
+-                        upstream_dist_map[sensor] = us_dist_list[i]
+-                    else:
+-                        upstream_map[sensor] = None
+-                        upstream_dist_map[sensor] = np.nan
+-                else:
+-                    upstream_map[sensor] = None
+-                    upstream_dist_map[sensor] = np.nan
+-            
+-            logging.info(f"Mapping dictionaries built for adjacent sensor index {i+1}.")
+-            
+-            # Map the adjacent sensor IDs to a temporary column using dictionary mapping via a lambda.
+-            self.df_for_ML[f'downstream_sensor_id_{i+1}'] = self.df_for_ML['sensor_id'].map(
+-                lambda x: downstream_map.get(x, None)
+-            )
+-            self.df_for_ML[f'upstream_sensor_id_{i+1}'] = self.df_for_ML['sensor_id'].map(
+-                lambda x: upstream_map.get(x, None)
+-            )
+-            
+-            # Prepare arrays for vectorized lookup.
+-            dates = self.df_for_ML['date'].values
+-            ds_ids = self.df_for_ML[f'downstream_sensor_id_{i+1}'].values
+-            us_ids = self.df_for_ML[f'upstream_sensor_id_{i+1}'].values
+-            
+-            # Define a safe lookup function to get the adjacent sensor's value from the pivot table.
+-            def safe_lookup(date, sensor_id):
+-                try:
+-                    if pd.isna(sensor_id):
+-                        return np.nan
+-                    return pivot.at[date, sensor_id]
+-                except KeyError:
+-                    return np.nan
+-            
+-            logging.info(f"Performing vectorized lookup for adjacent sensor index {i+1}.")
+-            # Lookup downstream and upstream values row-wise.
+-            self.df_for_ML[f'downstream_sensor_{i+1}'] = [safe_lookup(d, s) for d, s in zip(dates, ds_ids)]
+-            self.df_for_ML[f'upstream_sensor_{i+1}'] = [safe_lookup(d, s) for d, s in zip(dates, us_ids)]
+-            
+-            # Normalize by distance if requested.
+-            if normalize_by_distance:
+-                self.df_for_ML[f'downstream_sensor_{i+1}'] = self.df_for_ML[f'downstream_sensor_{i+1}'] / 3.6
+-                logging.info(f"Normalizing values by distance for adjacent sensor index {i+1}.")
+-                self.df_for_ML[f'downstream_sensor_{i+1}'] = (
+-                    self.df_for_ML[f'downstream_sensor_{i+1}'] /
+-                    self.df_for_ML['sensor_id'].map(lambda x: downstream_dist_map.get(x, np.nan))
+-                )
+-                self.df_for_ML[f'upstream_sensor_{i+1}'] = self.df_for_ML[f'upstream_sensor_{i+1}'] / 3.6
+-                self.df_for_ML[f'upstream_sensor_{i+1}'] = (
+-                    self.df_for_ML[f'upstream_sensor_{i+1}'] /
+-                    self.df_for_ML['sensor_id'].map(lambda x: upstream_dist_map.get(x, np.nan))
+-                )
+-            
+-            # Drop the temporary adjacent sensor ID columns.
+-            self.df_for_ML.drop(columns=[f'downstream_sensor_id_{i+1}', f'upstream_sensor_id_{i+1}'], inplace=True)
+-            logging.info(f"Finished processing adjacent sensor index {i+1}.")
+-            self.df_for_ML[f'downstream_sensor_{i+1}'].fillna(fill_nans_value, inplace=True)
+-            self.df_for_ML[f'upstream_sensor_{i+1}'].fillna(fill_nans_value, inplace=True)
+-        
+-        logging.info("Finished adding all adjacent sensor features (optimized).")
+-        
+-    
+-
+-
+-    def flag_train_test_set(self, test_size):
+-        """
+-        Flags each row as part of the train or test set **per sensor** based on timestamps.
+-        This ensures the last X% of timepoints per sensor are marked as test.
+-        """
+-        logging.info("Flagging train/test set based on per-sensor timestamps.")
+-
+-        def flag_group(df_sensor):
+-            timestamps = df_sensor['date'].sort_values().unique()
+-            split_index = int(len(timestamps) * (1 - test_size))
+-            test_start = timestamps[split_index]
+-            return df_sensor['date'] >= test_start
+-
+-        for df in [self.df, self.df_for_ML]:
+-            if df is not None:
+-                df['test_set'] = df.groupby('sensor_id', group_keys=False).apply(flag_group).reset_index(drop=True)
+-
+-        logging.info("Train/test flags assigned per sensor.")
+-        
+-        
+-        
+-    def _add_lags_to_df(self, df, kind='absolute', fill_nans_value=-1):
+-        """
+-        Adds temporal lags (absolute or relative) to the given dataframe.
+-        
+-        Parameters:
+-        - df (pd.DataFrame): DataFrame to modify (either self.df or self.df_for_ML)
+-        - kind (str): 'absolute' or 'relative'
+-        - fill_nans_value (float): value to use for NaNs
+-        """
+-        epsilon = 1e-5  # for relative division
+-
+-        for i in range(1, self.lags + 1):
+-            if kind == 'absolute':
+-                lag_col = f'lag{i}'
+-                df[lag_col] = df.groupby(self.sensor_id_col_name)['value'].shift(i) - df['value']
+-            elif kind == 'relative':
+-                lag_col = f'relative_diff_lag{i}'
+-                shifted = df.groupby(self.sensor_id_col_name)['value'].shift(i)
+-                df[lag_col] = (df['value'] - shifted) / (shifted + epsilon)
+-            else:
+-                raise ValueError("Invalid kind: choose 'absolute' or 'relative'")
+-
+-            df[lag_col].fillna(fill_nans_value, inplace=True)
+-            if lag_col not in self.columns_to_use:
+-                self.columns_to_use.append(lag_col)
+-    
+-    def add_temporal_lags(self, fill_nans_value=-1):
+-        logging.info("Adding absolute temporal lags to both df and df_for_ML.")
+-        for df in [self.df, self.df_for_ML]:
+-            self._add_lags_to_df(df, kind='absolute', fill_nans_value=fill_nans_value)
+-    
+-    def add_relative_temporal_lags(self, fill_nans_value=-1):
+-        logging.info("Adding relative temporal lags to both df and df_for_ML.")
+-        for df in [self.df, self.df_for_ML]:
+-            self._add_lags_to_df(df, kind='relative', fill_nans_value=fill_nans_value)
+-        
+-        
+-    def get_clean_train_test_split(self, df=None,test_size=0.5, nrows=None, select_relevant_cols=False, add_congestion=True,normalize_by_distance=False,
+-                                   hour_start=6, hour_end=19, quantile_threshold=0.9, quantile_percentage=0.65, lower_bound=0.01, upper_bound=0.99,
+-                                   use_weekend_var=True, reset_index=False, print_nans=True, filter_method=None, filter_params=None):
+-        """Split the data into train and test sets and optionally add a 'train_set' flag."""
+-        # Validate filtering method and parameters
+-        
+-        self.assert_valid_filter_method_and_params(
+-            filter_method, filter_params)
+-        self.test_size = test_size
+-        self.load_data_parquet(nrows=nrows,df=df)
+-        print('Data loaded as parquet')
+-        if filter_params is not None and 'relative_threshold' in filter_params:
+-            relative_threshold = filter_params['relative_threshold']
+-
+-        else:
+-            relative_threshold = 0.7
+-        self.diagnose_extreme_changes(relative_threshold)
+-        # Apply preprocessing
+-
+-
+-        self.prepare_data(nrows=nrows, select_relevant_cols=select_relevant_cols,
+-                          use_weekend_var=use_weekend_var)
+-
+-        # self.split_data_by_timestamps(test_size=test_size)
+-        # self.df['test_set'] = False
+-        # self.df_for_ML['test_set'] = False
+-        # self.df.loc[self.X_test.index, 'test_set'] = True
+-        # self.df_for_ML.loc[self.X_test.index, 'test_set'] = True
+-        if 'test_set' not in self.df.columns:
+-            self.flag_train_test_set(test_size)
+-        else:
+-            logging.info("Using existing 'test_set' column from input DataFrame.")
+-
+-        # Apply filtering if specified
+-        if filter_method:
+-            if filter_params is None:
+-                filter_params = {}
+-
+-            if filter_method == 'threshold':
+-                self.filter_extreme_changes(**filter_params)
+-            elif filter_method == 'smoothing':
+-                self.smooth_speeds(**filter_params)
+-            else:
+-                raise ValueError(
+-                    f"filter_method '{filter_method}' is invalid. Use 'threshold', 'smoothing', or None.")
+-        
+-        
+-        if self.gman_correction_as_target:
+-            self.create_target_variable_as_gman_error()
+-        else:
+-            self.create_target_variable()
+-        
+-        if self.lag_columns_exist:
+-            self.check_temporal_lags()
+-        else:   
+-            if self.lags_are_relative:
+-                self.add_relative_temporal_lags()
+-            else:
+-                self.add_temporal_lags() 
+-         
+-        if self.check_adjucent_sensors:
+-            self.check_adjucent_sensors()
+-        else:   
+-            if self.spatial_adj is not None:    
+-                self.add_adjacent_sensors(normalize_by_distance=normalize_by_distance)
+-            
+-                
+-        if add_congestion:
+-            self.add_bottleneck_columns(hour_start=hour_start, hour_end=hour_end,
+-                                        quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage)
+-            # After adding congestion, you must split again to ensure it’s included
+-            
+-        if 'test_set' in self.df_for_ML.columns:
+-            logging.info("Splitting data based on 'test_set' flag.")
+-            self.X_train = self.df_for_ML[~self.df_for_ML['test_set']]
+-            self.X_test = self.df_for_ML[self.df_for_ML['test_set']]
+-            self.y_train = self.df_for_ML[~self.df_for_ML['test_set']]['target']
+-            self.y_test = self.df_for_ML[self.df_for_ML['test_set']]['target']
+-        else:
+-            logging.info("Splitting data based on timestamps using test_size parameter of get_clean_train_test_split.")
+-            self.split_data_by_timestamps()
+-            
+-        # Add outliers now — adds 'is_outlier' to columns_to_use
+-        if self.flag_outliers:
+-            self.find_outliers(lower_bound=lower_bound, upper_bound=upper_bound)
+-
+-        # Now remove weather cols AFTER outliers were added to columns_to_use
+-        if not self.use_weather_features:
+-            self.drop_weather_features()
+-
+-        # Reassign the feature sets using FINAL columns_to_use
+-        self.X_train = self.X_train[self.columns_to_use]
+-        self.X_test = self.X_test[self.columns_to_use]
+-
+-                
+-        # else:
+-        #     # If no filtering is specified, at least filter extreme changes with a relative threshold of 0.7
+-        #     self.filter_extreme_changes(relative_threshold=0.7)
+-         
+-        
+-
+-        if print_nans:
+-            logging.info(
+-                f"number of nans in X_train: {self.X_train.isna().sum().sum()}")
+-            logging.info(
+-                f"number of nans in X_test: {self.X_test.isna().sum().sum()}")
+-            logging.info(
+-                f"number of nans in y_train: {self.y_train.isna().sum().sum()}")
+-            logging.info(
+-                f"number of nans in y_test: {self.y_test.isna().sum().sum()}")
+-
+-        return self.get_train_test_split(reset_index=reset_index)
+-
+-    def validate_target_variable(self):
+-        """Check if the target variable was computed correctly."""
+-        logging.info("Validating target variable...")
+-
+-        # Copy the dataframe to avoid modifying the original
+-        df_test = self.df_for_ML.copy()
+-
+-        # Ensure sorting is correct
+-        df_test = df_test.sort_values(by=[self.sensor_id_col_name, 'datetime'])
+-
+-        # Compute expected target values based on target type
+-        if self.gman_correction_as_target:
+-            # Expected target should be (true future speed - GMAN-predicted speed)
+-            df_test['expected_target'] = (
+-                df_test.groupby(self.sensor_id_col_name)[
+-                    'value'].shift(-self.horizon)
+-                - df_test.groupby(self.sensor_id_col_name)['gman_prediction'].shift(-self.horizon)
+-            )
+-        else:
+-            # Expected target should be (true future speed - current speed)
+-            df_test['expected_target'] = (
+-                df_test.groupby(self.sensor_id_col_name)[
+-                    'value'].shift(-self.horizon)
+-                - df_test['value']
+-            )
+-
+-        # Compare expected vs actual target
+-        df_test['target_correct'] = df_test['target'] == df_test['expected_target']
+-
+-        # If all values match, return success
+-        if df_test['target_correct'].all():
+-            logging.info("All target values are correct!")
+-            return True
+-        else:
+-            logging.warning(
+-                "Some target values are incorrect! Inspecting incorrect rows...")
+-
+-            incorrect_rows = df_test[df_test['target_correct'] == False]
+-
+-            return False
+-
+-    def plot_sensor_train_test_split(self, test_size=0.5):
+-        """
+-        Randomly sample a sensor and plot its train-test split.
+-        Ensures a previously plotted sensor is not plotted again consecutively.
+-        """
+-        if self.df is None:
+-            raise ValueError(
+-                "Dataframe is empty. Please load and preprocess the data first.")
+-        if self.test_size is None:
+-            raise ValueError(
+-                "No test size specified. Please load and preprocess the data first.")
+-
+-        # Add time column
+-        self.add_time_column(sort_by_datetime=False)
+-
+-        # Get unique sensors and ensure no duplicate consecutive plotting
+-        unique_sensors = set(self.df[self.sensor_id_col_name].unique())
+-        available_sensors = unique_sensors - self.previous_plotted_sensors
+-        if not available_sensors:
+-            self.previous_plotted_sensors.clear()  # Reset once all sensors are plotted
+-            available_sensors = unique_sensors
+-
+-        # Randomly sample a sensor
+-        sensor_to_plot = random.choice(list(available_sensors))
+-        self.previous_plotted_sensors.add(sensor_to_plot)
+-
+-        # Filter data for the selected sensor
+-        sensor_data = self.df[self.df[self.sensor_id_col_name]
+-                              == sensor_to_plot].copy()
+-        sensor_to_plot_name = sensor_to_plot
+-
+-        # Assign train/test flags chronologically
+-        sensor_data = sensor_data.sort_values(self.time_col_name)
+-        cutoff = int(len(sensor_data) * (1 - test_size))
+-        sensor_data['train_set'] = False
+-        sensor_data.iloc[:cutoff,
+-                         sensor_data.columns.get_loc('train_set')] = True
+-
+-        # Plot the train-test split
+-        plt.figure(figsize=(12, 6))
+-        plt.scatter(
+-            sensor_data[self.time_col_name], sensor_data['value'],
+-            c=sensor_data['train_set'].map({True: 'blue', False: 'red'}),
+-            alpha=0.6
+-        )
+-        plt.title(f"Train-Test Split Visualization for {sensor_to_plot_name}")
+-        plt.xlabel("Time (minutes)")
+-        plt.ylabel("Speed [kph]")
+-        plt.grid()
+-        plt.show()
+-   
+-   
+-   
+-   # def split_data_by_timestamps(self, test_size):
+-    #     """
+-    #     Splits the dataset into train and test sets based on timestamps 
+-    #     to ensure consistency across different models.
+-    #     """
+-    #     logging.info('Splitting the dataset based on timestamps.')
+-
+-    #     # Get the total number of unique timestamps
+-    #     unique_timestamps = self.df_for_ML['date'].sort_values().unique()
+-    #     num_timestamps = len(unique_timestamps)
+-
+-    #     # Determine the split index based on the test_size ratio
+-    #     split_index = int(num_timestamps * (1 - test_size))
+-
+-    #     # Get the first test timestamp
+-    #     first_test_timestamp = unique_timestamps[split_index]
+-    #     last_test_timestamp = unique_timestamps[-1]
+-    #     first_train_timestamp = unique_timestamps[0]
+-    #     last_train_timestamp = unique_timestamps[split_index - 1]
+-
+-    #     # Create the train and test sets
+-    #     train_mask = self.df_for_ML['date'] < first_test_timestamp
+-    #     test_mask = self.df_for_ML['date'] >= first_test_timestamp
+-
+-    #     self.X_train = self.df_for_ML.loc[train_mask,
+-    #                                       self.columns_to_use].copy()
+-    #     self.X_test = self.df_for_ML.loc[test_mask, self.columns_to_use].copy()
+-    #     self.y_train = self.df_for_ML.loc[train_mask, 'target'].copy()
+-    #     self.y_test = self.df_for_ML.loc[test_mask, 'target'].copy()
+-
+-    #     logging.info(
+-    #         f"Train set timestamps: {first_train_timestamp} to {last_train_timestamp}")
+-    #     logging.info(
+-    #         f"Test set timestamps: {first_test_timestamp} to {last_test_timestamp}")
+-        
+-   
+- # def smooth_speeds(self, window_size=3):
+-    #     logging.info("Applying rolling median smoothing to speed values.")
+-        
+-    #     # Ensure original values are stored before modifying 'value'
+-
+-    #     if self.smoothing_on_train_set_only:
+-
+-    #         # Apply smoothing only on training set rows
+-    #         train_mask_df = self.df['test_set'] == False
+-    #         train_mask_df_ml = self.df_for_ML['test_set'] == False
+-
+-    #         logging.info("Applying smoothing only on training set rows.")
+-    #         self._apply_smoothing(self.df, train_mask_df, window_size)
+-    #         self._apply_smoothing(self.df_for_ML, train_mask_df_ml, window_size)
+-    #     else:
+-    #         logging.info("Applying smoothing to the entire dataset.")
+-    #         self._apply_smoothing(self.df, None, window_size)
+-    #         self._apply_smoothing(self.df_for_ML, None, window_size)
+-
+-    #     logging.info("Smoothing completed.")
+-        
+-    # def _apply_smoothing(self, df, mask, window_size):
+-    #     """
+-    #     Applies rolling median smoothing to the 'value' column.
+-
+-    #     Args:
+-    #         df (pd.DataFrame): The dataframe on which smoothing is to be applied.
+-    #         mask (pd.Series or None): A boolean mask for selecting rows. If None, applies to entire df.
+-    #         window_size (int): The size of the rolling window.
+-    #     """
+-    #     if mask is not None:
+-    #         print(f'Applying smoothing on training only (len: {len(df[mask])})')
+-    #         print(f'Applying smoothing on nr of sensors: {df[mask]["sensor_id"].nunique()}')
+-    #         print(f"Applying smoothing on dates from {df.loc[mask,'date'].min()} to {df.loc[mask,'date'].max()}")
+-    #         df.loc[mask, 'value'] = df.loc[mask].groupby('sensor_id')['value'].transform(
+-    #             lambda x: x.rolling(window=window_size, center=False, min_periods=1).median())
+-    #     else:
+-    #         print(f'Applying smoothing on entire dataset (len: {len(df)})')
+-    #         print(f'Applying smoothing on nr of sensors: {df["sensor_id"].nunique()}')
+-    #         print(f"Applying smoothing on dates from {df['date'].min()} to {df['date'].max()}")
+-    #         df['value'] = df.groupby('sensor_id')['value'].transform(
+-    #             lambda x: x.rolling(window=window_size, center=False, min_periods=1).median())
+-
+-        #df['value'] = df['value'].fillna(method='ffill').fillna(method='bfill')
+-        
+-   
+- # def add_temporal_lags(self, fill_nans_value=-1):
+-    #     """Add temporal lag features, creating 'lag1', 'lag2', ..., 'lagN' features for model input."""
+-    #     logging.info("Adding temporal lags.")
+-    #     for i in range(self.lags):
+-    #         lag_col_name = f'lag{i+1}'
+-    #         # self.df_for_ML[lag_col_name] = self.df_for_ML.groupby(self.sensor_id_col_name)['value'].shift(i+1) - self.df['value']
+-    #         self.df[lag_col_name] = self.df.groupby(self.sensor_id_col_name)[
+-    #             'value'].shift(i+1) - self.df['value']
+-    #         self.df[lag_col_name].fillna(fill_nans_value, inplace=True)
+-    #         self.columns_to_use += [lag_col_name]
+-
+-    # def add_relative_temporal_lags(self, fill_nans_value=-1):
+-    #     """
+-    #     Add temporal lag features as relative percentage differences compared to past values.
+-
+-    #     This method generates features representing how much the current speed has changed
+-    #     relative to the speeds at previous timestamps (lags).
+-
+-    #     Formula:
+-    #         relative_diff_lag_i = (value_t - value_{t-i}) / (value_{t-i} + epsilon)
+-
+-    #     Parameters:
+-    #         fill_nans_value (float, optional): Value to fill NaNs introduced by lagging. Defaults to -1.
+-
+-    #     Adds columns:
+-    #         relative_diff_lag1, relative_diff_lag2, ..., relative_diff_lagN
+-    #     """
+-    #     logging.info("Adding relative percentage temporal lag features.")
+-
+-    #     epsilon = 1e-5  # Small number to avoid division by zero
+-
+-    #     for i in range(1, self.lags + 1):
+-    #         lag_col_name = f'relative_diff_lag{i}'
+-
+-    #         # Shift values by i to get past speeds
+-    #         shifted_values = self.df.groupby(self.sensor_id_col_name)[
+-    #             'value'].shift(i)
+-
+-    #         # Compute relative difference
+-    #         self.df[lag_col_name] = (
+-    #             self.df['value'] - shifted_values) / (shifted_values + epsilon)
+-
+-    #         # Handle NaNs introduced by shifting
+-    #         self.df[lag_col_name].fillna(fill_nans_value, inplace=True)
+-
+-    #         # Append new column to the list of features to use
+-    #         self.columns_to_use.append(lag_col_name)     
+-        
+-# def add_adjacent_sensors(self, normalize_by_distance=False):
+-    #     """
+-    #     Optimized function to add adjacent sensor features without using nested loops.
+-
+-    #     Instead of iterating through every sensor, we vectorize operations by using 
+-    #     pandas `.merge()` and `.map()`.
+-    #     """
+-    #     logging.info("Adding adjacent sensor features efficiently.")
+-
+-    #     # Convert dictionary into DataFrame for fast lookup
+-    #     downstream_df = pd.DataFrame.from_dict(self.downstream_sensor_dict, orient="index")
+-    #     upstream_df = pd.DataFrame.from_dict(self.upstream_sensor_dict, orient="index")
+-
+-    #     # Expand downstream/upstream sensor lists into separate columns
+-    #     downstream_df = downstream_df.apply(pd.Series.explode)
+-    #     upstream_df = upstream_df.apply(pd.Series.explode)
+-
+-    #     # Merge downstream/upstream sensor speeds into main DataFrame
+-    #     for i in range(self.spatial_adj):
+-    #         logging.info(f"Processing adjacent sensor {i+1}")
+-
+-    #         # Downstream Mapping
+-    #         self.df_for_ML[f'downstream_sensor_{i+1}'] = self.df_for_ML['sensor_id'].map(
+-    #             downstream_df['downstream_sensor']
+-    #         )
+-            
+-    #         # Upstream Mapping
+-    #         self.df_for_ML[f'upstream_sensor_{i+1}'] = self.df_for_ML['sensor_id'].map(
+-    #             upstream_df['upstream_sensor']
+-    #         )
+-
+-    #         # Merge speed values using a left join on `sensor_id` and `date`
+-    #         self.df_for_ML = self.df_for_ML.merge(
+-    #             self.df_for_ML[['sensor_id', 'date', 'value']],
+-    #             left_on=[f'downstream_sensor_{i+1}', 'date'],
+-    #             right_on=['sensor_id', 'date'],
+-    #             how='left',
+-    #             suffixes=('', f'_downstream_{i+1}')
+-    #         )
+-
+-    #         self.df_for_ML = self.df_for_ML.merge(
+-    #             self.df_for_ML[['sensor_id', 'date', 'value']],
+-    #             left_on=[f'upstream_sensor_{i+1}', 'date'],
+-    #             right_on=['sensor_id', 'date'],
+-    #             how='left',
+-    #             suffixes=('', f'_upstream_{i+1}')
+-    #         )
+-
+-    #         # Rename merged columns
+-    #         self.df_for_ML.rename(
+-    #             columns={
+-    #                 'value_downstream_' + str(i+1): f'downstream_sensor_{i+1}_speed',
+-    #                 'value_upstream_' + str(i+1): f'upstream_sensor_{i+1}_speed',
+-    #             },
+-    #             inplace=True
+-    #         )
+-
+-    #         # Drop unnecessary columns
+-    #         self.df_for_ML.drop(columns=[f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}'], inplace=True)
+-
+-    #         # Normalize by distance if needed
+-    #         if normalize_by_distance:
+-    #             # Convert speed from kph to m/s
+-    #             #self.df_for_ML[f'downstream_sensor_{i+1}_speed'] /= 3.6
+-
+-    #             # Normalize by distance
+-    #             #self.df_for_ML[f'downstream_sensor_{i+1}_speed'] /= downstream_df['downstream_distance']
+-                
+-                
+-    #             # Convert speed from kph to m/s
+-    #             #self.df_for_ML[f'upstream_sensor_{i+1}_speed'] /= 3.6
+-
+-    #             # Normalize by distance
+-    #             #self.df_for_ML[f'upstream_sensor_{i+1}_speed'] /= downstream_df['upstream_distance']
+-    #             self.df_for_ML[f'downstream_sensor_{i+1}_speed'] /= downstream_df['downstream_distance']
+-    #             self.df_for_ML[f'upstream_sensor_{i+1}_speed']/3.6 /= upstream_df['upstream_distance']
+-
+-    #         self.columns_to_use.extend([f'downstream_sensor_{i+1}_speed', f'upstream_sensor_{i+1}_speed'])
+-
+-    #     logging.info("Efficiently added adjacent sensor features.")
+-   
+-    # def add_adjacent_sensors(self, normalize_by_distance=False):
+-    #     """
+-    #     Adds features for adjacent sensors to the DataFrame in a vectorized manner.
+-        
+-    #     For each sensor and for each spatial adjacency (up to self.spatial_adj), this method:
+-    #     - Creates mapping dictionaries to look up the downstream/upstream sensor IDs (and distances)
+-    #     - Pivots the DataFrame so that each row (date) allows fast lookup of a sensor's value
+-    #     - Uses a vectorized lookup to assign the adjacent sensor's value for each row.
+-        
+-    #     Parameters:
+-    #     - normalize_by_distance (bool): If True, the adjacent sensor's value is divided by its
+-    #     corresponding distance.
+-    #     """
+-    #     logging.info("Starting to add adjacent sensor features (optimized).")
+-        
+-    #     # Initialize empty columns for each spatial adjacency and update the feature list.
+-    #     for i in range(self.spatial_adj):
+-    #         self.df_for_ML[f'downstream_sensor_{i+1}'] = np.nan
+-    #         self.df_for_ML[f'upstream_sensor_{i+1}'] = np.nan
+-    #         self.columns_to_use += [f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}']
+-        
+-    #     logging.info("Pivoting the DataFrame for fast lookups by date and sensor_id.")
+-    #     # Pivot the DataFrame for fast date-sensor lookups.
+-    #     pivot = self.df_for_ML.pivot(index='date', columns='sensor_id', values='value')
+-    #     logging.info(f"Pivot table shape: {pivot.shape}")
+-        
+-    #     # Process each spatial index (e.g. 1st, 2nd, … adjacent sensor)
+-    #     unique_sensors = self.df_for_ML['sensor_id'].unique()
+-    #     logging.info(f"Number of unique sensors: {len(unique_sensors)}")
+-        
+-    #     for i in range(self.spatial_adj):
+-    #         logging.info(f"Processing adjacent sensor index: {i+1}")
+-    #         # Build mapping dictionaries for this spatial level.
+-    #         downstream_map = {}
+-    #         downstream_dist_map = {}
+-    #         upstream_map = {}
+-    #         upstream_dist_map = {}
+-            
+-    #         for sensor in unique_sensors:
+-    #             # Downstream mapping
+-    #             if sensor in self.downstream_sensor_dict:
+-    #                 ds_list = self.downstream_sensor_dict[sensor]['downstream_sensor']
+-    #                 ds_dist_list = self.downstream_sensor_dict[sensor]['downstream_distance']
+-    #                 if i < len(ds_list) and ds_list[i] is not None:
+-    #                     downstream_map[sensor] = ds_list[i]
+-    #                     downstream_dist_map[sensor] = ds_dist_list[i]
+-    #                 else:
+-    #                     downstream_map[sensor] = None
+-    #                     downstream_dist_map[sensor] = np.nan
+-    #             else:
+-    #                 downstream_map[sensor] = None
+-    #                 downstream_dist_map[sensor] = np.nan
+-
+-    #             # Upstream mapping
+-    #             if sensor in self.upstream_sensor_dict:
+-    #                 us_list = self.upstream_sensor_dict[sensor]['upstream_sensor']
+-    #                 us_dist_list = self.upstream_sensor_dict[sensor]['upstream_distance']
+-    #                 if i < len(us_list) and us_list[i] is not None:
+-    #                     upstream_map[sensor] = us_list[i]
+-    #                     upstream_dist_map[sensor] = us_dist_list[i]
+-    #                 else:
+-    #                     upstream_map[sensor] = None
+-    #                     upstream_dist_map[sensor] = np.nan
+-    #             else:
+-    #                 upstream_map[sensor] = None
+-    #                 upstream_dist_map[sensor] = np.nan
+-            
+-    #         logging.info(f"Mapping dictionaries built for adjacent index {i+1}.")
+-            
+-    #         # Map the adjacent sensor IDs to the rows in df_for_ML.
+-    #         self.df_for_ML[f'downstream_sensor_id_{i+1}'] = self.df_for_ML['sensor_id'].map(downstream_map)
+-    #         self.df_for_ML[f'upstream_sensor_id_{i+1}'] = self.df_for_ML['sensor_id'].map(upstream_map)
+-            
+-    #         # Prepare arrays for vectorized lookup.
+-    #         dates = self.df_for_ML['date'].values
+-    #         ds_ids = self.df_for_ML[f'downstream_sensor_id_{i+1}'].values
+-    #         us_ids = self.df_for_ML[f'upstream_sensor_id_{i+1}'].values
+-            
+-    #         # Define a safe lookup function to get the adjacent sensor's value.
+-    #         def safe_lookup(date, sensor_id):
+-    #             try:
+-    #                 if pd.isna(sensor_id):
+-    #                     return np.nan
+-    #                 return pivot.at[date, sensor_id]
+-    #             except KeyError:
+-    #                 return np.nan
+-            
+-        #     logging.info(f"Performing vectorized lookup for downstream and upstream values at adjacent index {i+1}.")
+-        #     # Lookup downstream and upstream values row-wise.
+-        #     self.df_for_ML[f'downstream_sensor_{i+1}'] = [safe_lookup(d, s) for d, s in zip(dates, ds_ids)]
+-        #     self.df_for_ML[f'upstream_sensor_{i+1}'] = [safe_lookup(d, s) for d, s in zip(dates, us_ids)]
+-            
+-        #     # Normalize by distance if requested.
+-        #     if normalize_by_distance:
+-        #         logging.info(f"Normalizing values by distance for adjacent index {i+1}.")
+-        #         self.df_for_ML[f'downstream_sensor_{i+1}'] = (
+-        #             (self.df_for_ML[f'downstream_sensor_{i+1}']/3.6) /
+-        #             self.df_for_ML['sensor_id'].map(downstream_dist_map)
+-        #         )
+-        #         self.df_for_ML[f'upstream_sensor_{i+1}'] = (
+-        #             (self.df_for_ML[f'upstream_sensor_{i+1}']/3.6) /
+-        #             self.df_for_ML['sensor_id'].map(upstream_dist_map)
+-        #         )
+-            
+-        #     # Drop the temporary adjacent sensor ID columns.
+-        #     self.df_for_ML.drop(columns=[f'downstream_sensor_id_{i+1}', f'upstream_sensor_id_{i+1}'], inplace=True)
+-        #     logging.info(f"Finished processing adjacent sensor index {i+1}.")
+-        
+-        # self.df_for_ML[f'downstream_sensor_{i+1}'].fillna(-1, inplace=True)
+-        # self.df_for_ML[f'upstream_sensor_{i+1}'].fillna(-1, inplace=True)
+-        
+-        # logging.info("Finished adding all adjacent sensor features (optimized).")
+-    
+-    
+-    # def flag_train_test_set(self, test_size):
+-    #     """
+-    #     Flags each row as being part of the train or test set without splitting the dataset.
+-
+-    #     This ensures that:
+-    #     - The test set is determined based on timestamps before any transformations.
+-    #     - The 'test_set' column can be used for filtering/smoothing before splitting.
+-
+-    #     Parameters:
+-    #     - test_size (float): The proportion of data to be used as the test set.
+-    #     """
+-    #     logging.info("Flagging train/test set based on timestamps.")
+-
+-    #     # Get unique timestamps, sorted
+-    #     unique_timestamps = self.df['date'].sort_values().unique()
+-    #     num_timestamps = len(unique_timestamps)
+-
+-    #     # Determine the split index for test set
+-    #     split_index = int(num_timestamps * (1 - test_size))
+-
+-    #     # Identify the first test timestamp
+-    #     first_test_timestamp = unique_timestamps[split_index]
+-
+-    #     # Assign 'test_set' flag in both dataframes
+-    #     for df in [self.df, self.df_for_ML]:
+-    #         if df is not None:
+-    #             df['test_set'] = df['date'] >= first_test_timestamp
+-
+-    #     logging.info(f"Test set starts from timestamp: {first_test_timestamp}.")
+-        
+-# def add_adjacent_sensors(self, normalize_by_distance=False):
+-#         """
+-#         Adds features for adjacent sensors to the DataFrame.
+-
+-#         The method adds as features the speed of adjacent sensors for each timestamp.
+-
+-#         Parameters:
+-#         - normalize_by_distance (bool): If True, the speed is normalized by the (total) distance between sensors.
+-#         """
+-#         logging.info("Adding adjacent sensor features.")
+-        
+-#         # Create adjacency columns
+-#         for i in range(0, self.spatial_adj):
+-#             self.df_for_ML[f'downstream_sensor_{i+1}'] = np.nan
+-#             self.columns_to_use += [f'downstream_sensor_{i+1}']
+-#             self.df_for_ML[f'upstream_sensor_{i+1}'] = np.nan
+-#             self.columns_to_use += [f'upstream_sensor_{i+1}']
+-            
+-#         logging.info(f"Initialized adjacent sensor features.")
+-        
+-#         for sensor in self.df_for_ML['sensor_id'].unique():
+-#             logging.info(f"Processing sensor adjucency of: {sensor}.")
+-#             downstream_sensors = self.downstream_sensor_dict[sensor]['downstream_sensor']
+-#             downstream_distances = self.downstream_sensor_dict[sensor]['downstream_distance']
+-#             upstream_sensors = self.upstream_sensor_dict[sensor]['upstream_sensor']
+-#             upstream_distances = self.upstream_sensor_dict[sensor]['upstream_distance']
+-            
+-#             for i in range(0, self.spatial_adj):
+-#                 logging.info(f"Processing sensor adjucency of: {sensor}, downstream sensor: {i}.")
+-#                 for date in self.df_for_ML['date'].unique():
+-#                     downsteam_value = self.df_for_ML[(self.df_for_ML['sensor_id'] == downstream_sensors[i]) & (self.df_for_ML['date'] == date)]['value'].values
+-#                     downstream_distance = downstream_distances[i]
+-#                     upsteam_value = self.df_for_ML[(self.df_for_ML['sensor_id'] == upstream_sensors[i]) & (self.df_for_ML['date'] == date)]['value'].values
+-#                     upstream_distance = upstream_distances[i]
+-#                     if normalize_by_distance:
+-#                         downsteam_value = downsteam_value / downstream_distance
+-#                         upsteam_value = upsteam_value / upstream_distance
+-#                     self.df_for_ML.loc[(self.df_for_ML['sensor_id'] == sensor) & (self.df_for_ML['date'] == date), f'downstream_sensor_{i+1}'] = downsteam_value
+-#                     self.df_for_ML.loc[(self.df_for_ML['sensor_id'] == sensor) & (self.df_for_ML['date'] == date), f'upstream_sensor_{i+1}'] = upsteam_value
+-
+-
+-
+-
+-
+-
+-        
+-        
+-    ####### Second Version of add_adjacent_sensors ####### (infinite loop maybe)
+-    # def add_adjacent_sensors_old(self, nr_of_adj_sensors=2, value_if_no_adjacent=-1, normalize_by_distance=True):
+-    #     """
+-    #     Adds adjacent sensor speeds as new features.
+-    #     If normalize_by_distance is True, speeds are divided by distance.
+-        
+-    #     Parameters:
+-    #     - nr_of_adj_sensors (int): Number of adjacent sensors to consider upstream and downstream.
+-    #     - value_if_no_adjacent (float): Value to use if an adjacent sensor is missing (default -1).
+-    #     - normalize_by_distance (bool): If True, speeds are divided by distance; otherwise, raw speed values are used.
+-    #     """
+-    #     logging.info(f"Adding {nr_of_adj_sensors} adjacent sensors' speeds as features (Old Version).")
+-        
+-    #     # Load adjacency data
+-    #     adj_df = pd.read_csv(self.adj_sensors_file_path, sep=";")
+-        
+-    #     # Build adjacency graph (chaining connections correctly)
+-    #     adjacency_dict = {}
+-    #     for _, row in adj_df.iterrows():
+-    #         sensor = row['point_dgl_loc']
+-    #         connected_sensor = row['conn_points_dgl_loc']
+-    #         distance = row['distance']
+-            
+-    #         if sensor not in adjacency_dict:
+-    #             adjacency_dict[sensor] = {'upstream': [], 'downstream': []}
+-            
+-    #         adjacency_dict[sensor]['downstream'].append((connected_sensor, distance))
+-    #         adjacency_dict[connected_sensor] = adjacency_dict.get(connected_sensor, {'upstream': [], 'downstream': []})
+-    #         adjacency_dict[connected_sensor]['upstream'].append((sensor, distance))
+-        
+-    #     logging.info("Finished building adjacency graph.")
+-        
+-    #     def find_nth_adjacent(sensor_id, direction, depth=1):
+-    #         """
+-    #         Recursively finds the nth adjacent sensor by following adjacency links.
+-    #         """
+-    #         if depth > nr_of_adj_sensors or sensor_id not in adjacency_dict:
+-    #             return None, None
+-            
+-    #         if adjacency_dict[sensor_id][direction]:
+-    #             next_sensor, distance = adjacency_dict[sensor_id][direction][0]
+-    #             if depth == 1:
+-    #                 return next_sensor, distance
+-    #             return find_nth_adjacent(next_sensor, direction, depth - 1)
+-    #         return None, None
+-        
+-    #     def get_adjacent_speed(row, direction):
+-    #         """
+-    #         Retrieves the speed values of adjacent sensors at the same timestamp.
+-    #         """
+-    #         sensor_id = row['sensor_id']
+-    #         timestamp = row['date']
+-            
+-    #         values = []
+-    #         for depth in range(1, nr_of_adj_sensors + 1):
+-    #             adj_sensor, dist = find_nth_adjacent(sensor_id, direction, depth)
+-    #             if adj_sensor is None:
+-    #                 values.append(value_if_no_adjacent)
+-    #             else:
+-    #                 adj_value = self.df_for_ML.loc[
+-    #                     (self.df_for_ML['sensor_id'] == adj_sensor) & (self.df_for_ML['date'] == timestamp), 'value']
+-    #                 if not adj_value.empty:
+-    #                     value = adj_value.values[0] / dist if normalize_by_distance else adj_value.values[0]
+-    #                     values.append(value)
+-    #                 else:
+-    #                     values.append(value_if_no_adjacent)
+-            
+-    #         return values
+-        
+-    #     logging.info("Starting computation of adjacent sensor speeds.")
+-        
+-    #     self.df_for_ML[[f'upstream_{i+1}' for i in range(nr_of_adj_sensors)]] = self.df_for_ML.apply(
+-    #         lambda row: pd.Series(get_adjacent_speed(row, 'upstream')), axis=1
+-    #     )
+-    #     self.df_for_ML[[f'downstream_{i+1}' for i in range(nr_of_adj_sensors)]] = self.df_for_ML.apply(
+-    #         lambda row: pd.Series(get_adjacent_speed(row, 'downstream')), axis=1
+-    #     )
+-        
+-    #     logging.info("Finished adding adjacent sensor speeds (Old Version).")
+-    
+-    # def add_adjacent_sensors(self, nr_of_adj_sensors=2, value_if_no_adjacent=-1, normalize_by_distance=True):
+-    #     """
+-    #     Adds adjacent sensor speeds as new features.
+-    #     If normalize_by_distance is True, speeds are divided by distance.
+-        
+-    #     Parameters:
+-    #     - nr_of_adj_sensors (int): Number of adjacent sensors to consider upstream and downstream.
+-    #     - value_if_no_adjacent (float): Value to use if an adjacent sensor is missing (default -1).
+-    #     - normalize_by_distance (bool): If True, speeds are divided by distance; otherwise, raw speed values are used.
+-    #     """
+-    #     logging.info(f"Adding {nr_of_adj_sensors} adjacent sensors' speeds as features.")
+-        
+-    #     # Load adjacency data
+-    #     adj_df = pd.read_csv(self.adj_sensors_file_path, sep=";")
+-        
+-    #     adjacency_dict = {}
+-    #     for _, row in adj_df.iterrows():
+-    #         sensor = row['point_dgl_loc']
+-    #         connected_sensor = row['conn_points_dgl_loc']
+-    #         distance = row['distance']
+-            
+-    #         if sensor not in adjacency_dict:
+-    #             adjacency_dict[sensor] = {'upstream': [], 'downstream': []}
+-            
+-    #         adjacency_dict[sensor]['downstream'].append((connected_sensor, distance))
+-    #         adjacency_dict[connected_sensor] = adjacency_dict.get(connected_sensor, {'upstream': [], 'downstream': []})
+-    #         adjacency_dict[connected_sensor]['upstream'].append((sensor, distance))
+-        
+-    #     logging.info("Finished building adjacency graph.")
+-        
+-    #     def find_nth_adjacent(sensor_id, direction, depth=1):
+-    #         if depth > nr_of_adj_sensors or sensor_id not in adjacency_dict:
+-    #             return None, None
+-            
+-    #         if adjacency_dict[sensor_id][direction]:
+-    #             next_sensor, distance = adjacency_dict[sensor_id][direction][0]
+-    #             if depth == 1:
+-    #                 return next_sensor, distance
+-    #             return find_nth_adjacent(next_sensor, direction, depth - 1)
+-    #         return None, None
+-        
+-    #     def get_adjacent_speeds(sensor_id, timestamp, direction):
+-    #         values = []
+-    #         for depth in range(1, nr_of_adj_sensors + 1):
+-    #             adj_sensor, dist = find_nth_adjacent(sensor_id, direction, depth)
+-    #             if adj_sensor is None:
+-    #                 values.append(value_if_no_adjacent)
+-    #             else:
+-    #                 speed = self.df_for_ML.loc[
+-    #                     (self.df_for_ML['sensor_id'] == adj_sensor) & (self.df_for_ML['date'] == timestamp), 'value']
+-    #                 if not speed.empty:
+-    #                     values.append(speed.values[0] / dist if normalize_by_distance else speed.values[0])
+-    #                 else:
+-    #                     values.append(value_if_no_adjacent)
+-    #         return values
+-        
+-    #     logging.info("Starting computation of adjacent sensor speeds.")
+-        
+-    #     self.df_for_ML[[f'upstream_{i+1}' for i in range(nr_of_adj_sensors)]] = self.df_for_ML.apply(
+-    #         lambda row: pd.Series(get_adjacent_speeds(row['sensor_id'], row['date'], 'upstream')), axis=1
+-    #     )
+-    #     self.df_for_ML[[f'downstream_{i+1}' for i in range(nr_of_adj_sensors)]] = self.df_for_ML.apply(
+-    #         lambda row: pd.Series(get_adjacent_speeds(row['sensor_id'], row['date'], 'downstream')), axis=1
+-    #     )
+-        
+-    #     logging.info("Finished adding adjacent sensor speeds.")
+-
+-        
+-####### First Version of add_adjacent_sensors ####### (works only for one adjacent sensor)
+-        
+-    # def add_adjacent_sensors_old(self, nr_of_adj_sensors=2, value_if_no_adjacent=-1, normalize_by_distance=True):
+-    #     """
+-    #     Adds adjacent sensor speeds as new features.
+-    #     If normalize_by_distance is True, speeds are divided by distance.
+-        
+-    #     Parameters:
+-    #     - nr_of_adj_sensors (int): Number of adjacent sensors to consider upstream and downstream.
+-    #     - value_if_no_adjacent (float): Value to use if an adjacent sensor is missing (default -1).
+-    #     - normalize_by_distance (bool): If True, speeds are divided by distance; otherwise, raw speed values are used.
+-    #     """
+-    #     logging.info(f"Adding {nr_of_adj_sensors} adjacent sensors' speeds as features (Old Version).")
+-        
+-    #     # Load adjacency data
+-    #     adj_df = pd.read_csv(self.adj_sensors_file_path, sep=";")
+-        
+-    #     # Build adjacency dictionary
+-    #     adjacency_dict = {}
+-    #     for _, row in adj_df.iterrows():
+-    #         sensor = row['point_dgl_loc']
+-    #         connected_sensor = row['conn_points_dgl_loc']
+-    #         distance = row['distance']
+-            
+-    #         if sensor not in adjacency_dict:
+-    #             adjacency_dict[sensor] = {'upstream': [], 'downstream': []}
+-    #         if connected_sensor not in adjacency_dict:
+-    #             adjacency_dict[connected_sensor] = {'upstream': [], 'downstream': []}
+-            
+-    #         # Assign upstream and downstream relationships
+-    #         adjacency_dict[sensor]['downstream'].append((connected_sensor, distance))
+-    #         adjacency_dict[connected_sensor]['upstream'].append((sensor, distance))
+-        
+-    #     # Sort by distance (ensures closest sensors are considered first)
+-    #     for sensor in adjacency_dict:
+-    #         adjacency_dict[sensor]['upstream'].sort(key=lambda x: x[1])
+-    #         adjacency_dict[sensor]['downstream'].sort(key=lambda x: x[1])
+-        
+-    #     # Function to get adjacent sensor speeds
+-    #     def get_adjacent_speed(row, direction):
+-    #         sensor_id = row['sensor_id']
+-    #         timestamp = row['date']
+-            
+-    #         if sensor_id not in adjacency_dict:
+-    #             return [value_if_no_adjacent] * nr_of_adj_sensors
+-            
+-    #         adjacent_sensors = adjacency_dict[sensor_id][direction][:nr_of_adj_sensors]
+-    #         values = []
+-    #         for adj_sensor, dist in adjacent_sensors:
+-    #             adj_value = self.df_for_ML.loc[
+-    #                 (self.df_for_ML['sensor_id'] == adj_sensor) & (self.df_for_ML['date'] == timestamp), 'value'
+-    #             ]
+-    #             if not adj_value.empty:
+-    #                 value = adj_value.values[0] / dist if normalize_by_distance else adj_value.values[0]
+-    #                 values.append(value)
+-    #             else:
+-    #                 values.append(value_if_no_adjacent)
+-            
+-    #         values += [value_if_no_adjacent] * (nr_of_adj_sensors - len(values))
+-    #         return values
+-        
+-    #     # Apply function
+-    #     self.df_for_ML[[f'upstream_{i+1}' for i in range(nr_of_adj_sensors)]] = self.df_for_ML.apply(
+-    #         lambda row: pd.Series(get_adjacent_speed(row, 'upstream')), axis=1
+-    #     )
+-    #     self.df_for_ML[[f'downstream_{i+1}' for i in range(nr_of_adj_sensors)]] = self.df_for_ML.apply(
+-    #         lambda row: pd.Series(get_adjacent_speed(row, 'downstream')), axis=1
+-    #     )
+-        
+-    #     logging.info("Finished adding adjacent sensor speeds (Old Version).")
+-    
+-    # def add_adjacent_sensors(self, nr_of_adj_sensors=2, value_if_no_adjacent=-1, normalize_by_distance=True):
+-    #     """
+-    #     Adds adjacent sensor speeds as new features.
+-    #     If normalize_by_distance is True, speeds are divided by distance.
+-        
+-    #     Parameters:
+-    #     - nr_of_adj_sensors (int): Number of adjacent sensors to consider upstream and downstream.
+-    #     - value_if_no_adjacent (float): Value to use if an adjacent sensor is missing (default -1).
+-    #     - normalize_by_distance (bool): If True, speeds are divided by distance; otherwise, raw speed values are used.
+-    #     """
+-    #     logging.info(f"Adding {nr_of_adj_sensors} adjacent sensors' speeds as features.")
+-        
+-    #     # Load adjacency data
+-    #     adj_df = pd.read_csv(self.adj_sensors_file_path, sep=";")
+-        
+-    #     # Build adjacency dictionary
+-    #     adjacency_dict = {}
+-    #     for _, row in adj_df.iterrows():
+-    #         sensor = row['point_dgl_loc']
+-    #         connected_sensor = row['conn_points_dgl_loc']
+-    #         distance = row['distance']
+-            
+-    #         if sensor not in adjacency_dict:
+-    #             adjacency_dict[sensor] = {'upstream': [], 'downstream': []}
+-    #         if connected_sensor not in adjacency_dict:
+-    #             adjacency_dict[connected_sensor] = {'upstream': [], 'downstream': []}
+-            
+-    #         adjacency_dict[sensor]['downstream'].append((connected_sensor, distance))
+-    #         adjacency_dict[connected_sensor]['upstream'].append((sensor, distance))
+-    #     logging.info("Finished building adjacency dictionary.")
+-    #     for sensor in adjacency_dict:
+-    #         adjacency_dict[sensor]['upstream'].sort(key=lambda x: x[1])
+-    #         adjacency_dict[sensor]['downstream'].sort(key=lambda x: x[1])
+-        
+-    #     speed_lookup = self.df_for_ML.set_index(['sensor_id', 'date'])['value'].to_dict()
+-    #     logging.info("Finished building speed lookup table.")
+-    #     def get_adjacent_speeds_optimized(sensor_id, timestamp, direction):
+-    #         if sensor_id not in adjacency_dict:
+-    #             return [value_if_no_adjacent] * nr_of_adj_sensors
+-            
+-    #         adjacent_sensors = adjacency_dict[sensor_id][direction][:nr_of_adj_sensors]
+-    #         values = []
+-    #         for adj_sensor, dist in adjacent_sensors:
+-    #             speed = speed_lookup.get((adj_sensor, timestamp), None)
+-    #             if speed is None:
+-    #                 values.append(value_if_no_adjacent)
+-    #             else:
+-    #                 values.append(speed / dist if normalize_by_distance else speed)
+-            
+-    #         values += [value_if_no_adjacent] * (nr_of_adj_sensors - len(values))
+-    #         return values
+-        
+-    #     self.df_for_ML[[f'upstream_{i+1}' for i in range(nr_of_adj_sensors)]] = pd.DataFrame(
+-    #         self.df_for_ML.apply(lambda row: get_adjacent_speeds_optimized(row['sensor_id'], row['date'], 'upstream'), axis=1).tolist(),
+-    #         index=self.df_for_ML.index
+-    #     )
+-    #     logging.info("Finished adding upstream speeds.")
+-    #     self.df_for_ML[[f'downstream_{i+1}' for i in range(nr_of_adj_sensors)]] = pd.DataFrame(
+-    #         self.df_for_ML.apply(lambda row: get_adjacent_speeds_optimized(row['sensor_id'], row['date'], 'downstream'), axis=1).tolist(),
+-    #         index=self.df_for_ML.index
+-    #     )
+-        
+-    #     logging.info("Finished adding adjacent sensor speeds.")
+-
+-    
+-                
+-   
+\ No newline at end of file
+diff --git a/features.py b/features.py
+deleted file mode 100644
+index 0bf0530..0000000
+--- a/features.py
++++ /dev/null
+@@ -1,535 +0,0 @@
+-
+-import os
+-import pandas as pd
+-import numpy as np
+-import warnings
+-from sklearn.model_selection import train_test_split
+-from .constants import colnames
+-import random
+-import matplotlib.pyplot as plt
+-import logging
+-from tqdm.auto import tqdm
+-from .helper_utils import *
+-import pickle
+-import time
+-import json
+-from typing import List, Tuple
+-import re 
+-# Configure logging
+-logging.basicConfig(
+-    format='%(asctime)s - %(levelname)s - %(message)s',
+-    level=logging.DEBUG  # You can set this to DEBUG, WARNING, etc. as needed
+-)
+-
+-
+-        
+-class AdjacentSensorFeatureAdderOptimal(LoggingMixin):
+-    def __init__(self,
+-                 sensor_dict_path='../data',
+-                 spatial_adj=5,
+-                 normalize_by_distance=True,
+-                 datetime_col='datetime',
+-                 value_col='value',
+-                 sensor_col='sensor_id',
+-                 adj_are_relative = False,
+-                 fill_nans_value=-1,
+-                 epsilon = 1e-5,
+-                 disable_logs=False):
+-        super().__init__(disable_logs)
+-        self.sensor_dict_path = sensor_dict_path
+-        self.downstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'downstream_dict.json')))
+-        self.upstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'upstream_dict.json')))
+-        self.spatial_adj = spatial_adj
+-        self.normalize_by_distance = normalize_by_distance
+-        self.fill_nans_value = fill_nans_value
+-        self.datetime_col = datetime_col
+-        self.value_col = value_col
+-        self.sensor_col = sensor_col
+-        self.adj_are_relative = adj_are_relative
+-        self.epsilon = epsilon
+-        self.new_columns = []
+-
+-    def transform(self, df, current_smoothing=None, prev_smoothing=None):
+-        self._log("Adding adjacent sensor features.")
+-
+-        if self.spatial_adj is None:
+-            self._log("No adjacent sensors to add. Skipping.")
+-            return df, []
+-        if self.spatial_adj < 1:
+-            self._log("No adjacent sensors to add. Skipping.")
+-            return df, []
+-
+-        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+-        pivot_stacked = pivot.stack().to_frame(self.value_col).rename_axis([self.datetime_col, self.sensor_col]).sort_index()
+-
+-        # Drop excess previously computed adjacent features
+-        for direction in ['upstream', 'downstream']:
+-            existing_cols = [col for col in df.columns if col.startswith(f'{direction}_sensor_') and not col.endswith('_id')]
+-            expected_cols = [f'{direction}_sensor_{i+1}' for i in range(self.spatial_adj)]
+-            to_drop = list(set(existing_cols) - set(expected_cols))
+-            if to_drop:
+-                df.drop(columns=to_drop, inplace=True)
+-                self._log(f"Dropped excess {direction} columns: {to_drop}")
+-
+-        for i in range(self.spatial_adj):
+-            down_col, up_col = f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}'
+-            if down_col in df.columns and up_col in df.columns and current_smoothing == prev_smoothing:
+-                self._log(f"Skipping {down_col} and {up_col}, they already exist in the df (max value of downstream: {df[down_col].max()}).")
+-                self.new_columns += [down_col, up_col]
+-                continue
+-
+-            # Generate maps
+-            down_map = {
+-                s: self.downstream_sensor_dict.get(s, {}).get('downstream_sensor', [None] * self.spatial_adj)[i]
+-                for s in df[self.sensor_col].unique()
+-            }
+-            up_map = {
+-                s: self.upstream_sensor_dict.get(s, {}).get('upstream_sensor', [None] * self.spatial_adj)[i]
+-                for s in df[self.sensor_col].unique()
+-            }
+-
+-            # Map to get sensor ids
+-            df[f'{down_col}_id'] = df[self.sensor_col].map(down_map)
+-            df[f'{up_col}_id'] = df[self.sensor_col].map(up_map)
+-
+-            # Create tuples for lookup and perform reindexing
+-            down_values = pivot_stacked[self.value_col].reindex(
+-                list(zip(df[self.datetime_col], df[f'{down_col}_id']))).values
+-            up_values = pivot_stacked[self.value_col].reindex(
+-                list(zip(df[self.datetime_col], df[f'{up_col}_id']))).values
+-
+-            df[down_col] = down_values
+-            df[up_col] = up_values
+-            
+-            if self.adj_are_relative:
+-                df[down_col] =(df[down_col] - df[self.value_col]) / (df[self.value_col] + self.epsilon)
+-                df[up_col] = (df[self.value_col] - df[up_col]) / (df[up_col] + self.epsilon)
+-                 
+-
+-            # Normalize
+-            if self.normalize_by_distance:
+-                down_dist_map = {
+-                    s: self.downstream_sensor_dict.get(s, {}).get('downstream_distance', [np.nan] * self.spatial_adj)[i]
+-                    for s in df[self.sensor_col].unique()
+-                }
+-                up_dist_map = {
+-                    s: self.upstream_sensor_dict.get(s, {}).get('upstream_distance', [np.nan] * self.spatial_adj)[i]
+-                    for s in df[self.sensor_col].unique()
+-                }
+-                df[down_col] = df[down_col] / 3.6 / df[self.sensor_col].map(down_dist_map)
+-                df[up_col] = df[up_col] / 3.6 / df[self.sensor_col].map(up_dist_map)
+-
+-            # Cleanup
+-            df.drop(columns=[f'{down_col}_id', f'{up_col}_id'], inplace=True)
+-            df[down_col].fillna(self.fill_nans_value, inplace=True)
+-            df[up_col].fillna(self.fill_nans_value, inplace=True)
+-            self.new_columns += [down_col, up_col]
+-            self._log(f"Added {down_col}, {up_col}")
+-
+-        return df, self.new_columns
+-
+-
+-class TemporalLagFeatureAdder(LoggingMixin):
+-    def __init__(self, lags=3, relative=False, fill_nans_value=-1, disable_logs=False,
+-                 sensor_col='sensor_id', value_col='value', datetime_col='datetime',epsilon = 1e-5):
+-        super().__init__(disable_logs)
+-        self.lags = lags
+-        self.relative = relative
+-        self.fill_nans_value = fill_nans_value
+-        self.sensor_col = sensor_col
+-        self.value_col = value_col
+-        self.datetime_col = datetime_col
+-        self.new_columns = []
+-        self.epsilon = epsilon
+-
+-    def transform(self, df, current_smoothing=None, prev_smoothing=None):
+-        self._log(f"Adding {'relative' if self.relative else 'absolute'} lags (lags={self.lags})")
+-        col_name_start = f"{'relative_diff_lag' if self.relative else 'lag'}"
+-        existing_cols = [col for col in df.columns if col.startswith(col_name_start)]
+-        expected_cols = [f'{col_name_start}_{i+1}' for i in range(self.lags)]
+-        to_drop = list(set(existing_cols) - set(expected_cols))
+-        if to_drop:
+-            df.drop(columns=to_drop, inplace=True)
+-            self._log(f"Dropped excess lag columns: {to_drop}")
+-
+-        for i in range(1, self.lags + 1):
+-            col_name = f"{'relative_diff_lag' if self.relative else 'lag'}{i}"
+-            if col_name in df.columns and current_smoothing == prev_smoothing:
+-                self._log(f"Skipping already existing column: {col_name}")
+-                self.new_columns.append(col_name)
+-                continue
+-            shifted = df.groupby(self.sensor_col)[self.value_col].shift(i)
+-
+-            if self.relative:
+-                df[col_name] = (df[self.value_col] - shifted) / (shifted + self.epsilon)
+-            else:
+-                df[col_name] = shifted - df[self.value_col]
+-
+-            df[col_name].fillna(self.fill_nans_value, inplace=True)
+-            self.new_columns.append(col_name)
+-
+-        return df, self.new_columns
+-
+-    
+-
+-class MiscellaneousFeatureEngineer(LoggingMixin):
+-    """
+-    Adds miscellaneous non-temporal, non-spatial features to the DataFrame.
+-    """
+-
+-    def __init__(self, sensor_col='sensor_id', new_sensor_id_col='sensor_uid', weather_cols=None,disable_logs=False):
+-        self.sensor_col = sensor_col
+-        self.new_sensor_id_col = new_sensor_id_col
+-        self.weather_cols = weather_cols or []
+-        super().__init__(disable_logs)
+-
+-    def map_sensor_ids(self, df):
+-        """Assigns unique integer IDs to each sensor."""
+-        logging.info("Mapping sensor IDs to integers.")
+-        sensor_ids = {sid: i for i, sid in enumerate(sorted(df[self.sensor_col].unique()))}
+-        df[self.new_sensor_id_col] = df[self.sensor_col].map(sensor_ids).astype(int)
+-        logging.info(f"Mapped {len(sensor_ids)} unique sensor IDs.")
+-        return df, [self.new_sensor_id_col]
+-
+-    def drop_weather_features(self, df):
+-        """Drops weather-related columns if present."""
+-        logging.info("Dropping weather-related features.")
+-        before_cols = set(df.columns)
+-        df = df.drop(columns=[col for col in self.weather_cols if col in df.columns], errors='ignore')
+-        dropped = list(before_cols - set(df.columns))
+-        logging.info(f"Dropped columns: {dropped}")
+-        return df, dropped
+-
+-    def transform(self, df,drop_weather = True):
+-        """Applies all miscellaneous transformations in one step."""
+-        df, id_cols = self.map_sensor_ids(df)
+-        if drop_weather:
+-            df, dropped_cols = self.drop_weather_features(df)
+-            return df, id_cols + dropped_cols
+-        return df, id_cols
+-
+-
+-class DateTimeFeatureEngineer(LoggingMixin):
+-    """
+-    Adds temporal features derived from a datetime column.
+-    """
+-
+-    def __init__(self, datetime_col='datetime',disable_logs=False):
+-        self.datetime_col = datetime_col
+-        super().__init__(disable_logs)
+-
+-    def add_weekend_columns(self, df):
+-        """Adds weekend indicators to the DataFrame."""
+-        self._log("Adding weekend indicator columns.")
+-        df['is_saturday'] = (df[self.datetime_col].dt.dayofweek == 5).astype(int)
+-        df['is_sunday'] = (df[self.datetime_col].dt.dayofweek == 6).astype(int)
+-        return df, ['is_saturday', 'is_sunday']
+-
+-    def add_hour_column(self, df):
+-        """Adds the hour-of-day column."""
+-        self._log("Adding hour column.")
+-        df['hour'] = df[self.datetime_col].dt.hour
+-        
+-    def add_day_column(self, df):
+-        """Adds the day-of-week column."""
+-        self._log("Adding day column.")
+-        df['day'] = df[self.datetime_col].dt.dayofweek
+-        return df, ['day']
+-
+-    def transform(self,df):
+-        """Applies all transformations in one step."""
+-        self._log("Adding datetime features.")
+-        self.add_hour_column(df)
+-        self.add_day_column(df)
+-        self.add_weekend_columns(df)
+-        return df, ['hour', 'day', 'is_saturday', 'is_sunday']
+-        
+-
+-class CongestionFeatureEngineer(LoggingMixin):
+-    """
+-    Adds congestion-related features including binary congestion flags and outlier detection.
+-    """
+-
+-    def __init__(self, hour_start=6, hour_end=19, quantile_threshold=0.9, quantile_percentage=0.65,lower_bound=0.01,upper_bound=0.99,disable_logs=False):
+-        self.hour_start = hour_start
+-        self.hour_end = hour_end
+-        self.quantile_threshold = quantile_threshold
+-        self.quantile_percentage = quantile_percentage
+-        self.lower_bound = lower_bound
+-        self.upper_bound = upper_bound
+-        super().__init__(disable_logs)
+-
+-    def transform_congestion(self, df):
+-        self._log("Adding congestion feature based on thresholds.")
+-        if 'hour' not in df.columns:
+-            raise ValueError("Column 'hour' is missing. Run DateTimeFeatureEngineer first.")
+-        if 'test_set' not in df.columns:
+-            raise ValueError("Column 'test_set' is missing. Ensure data has been split.")
+-
+-        mask = (
+-            (df['hour'] >= self.hour_start) &
+-            (df['hour'] <= self.hour_end) &
+-            (~df['test_set'])
+-        )
+-        congestion_thr = df[mask].groupby('sensor_id')['value'].quantile(self.quantile_threshold)
+-        thresholds = df['sensor_id'].map(congestion_thr) * self.quantile_percentage
+-
+-        df['is_congested'] = (df['value'] < thresholds).astype(int)
+-        return df, ['is_congested']
+-
+-    def add_outlier_flags(self, df):
+-        """
+-        Adds a binary 'is_outlier' column marking extreme outliers in 'value'.
+-
+-        Outliers are detected using percentiles from the training set.
+-        """
+-        self._log("Flagging outliers in training set.")
+-
+-        if 'test_set' not in df.columns:
+-            raise ValueError("Missing 'test_set' column. Split your data first.")
+-
+-        train_df = df[~df['test_set']]
+-        lower_val = train_df['value'].quantile(self.lower_bound)
+-        upper_val = train_df['value'].quantile(self.upper_bound)
+-
+-        self._log(f"Using outlier thresholds: lower={lower_val}, upper={upper_val}")
+-
+-        df['is_outlier'] = ((df['value'] < lower_val) | (df['value'] > upper_val)).astype(int)
+-        return df, ['is_outlier']
+-
+-    def transform(self, df):
+-        """Applies both congestion and outlier detection features."""
+-        df, c_cols = self.transform_congestion(df)
+-        df, o_cols = self.add_outlier_flags(df)
+-        return df, c_cols + o_cols
+-    
+-    
+-    
+-class PreviousWeekdayValueFeatureEngineerOptimal(LoggingMixin):
+-    """
+-    Adds a feature representing the value for each sensor from the previous non-weekend day,
+-    shifted forward by a given horizon (in minutes). Optionally enforces that both the current 
+-    and lookup timestamps must fall on weekdays.
+-
+-    Attributes:
+-        datetime_col (str): Name of the datetime column.
+-        sensor_col (str): Name of the sensor ID column.
+-        value_col (str): Name of the value column.
+-        horizon_minutes (int): Number of minutes to shift forward after finding the previous weekday.
+-        strict_weekday_match (bool): If True, keeps the feature only if both dates are Mon–Fri.
+-    """
+-
+-    def __init__(self, 
+-                 datetime_col = 'date', 
+-                 sensor_col = 'sensor_id', 
+-                 value_col = 'value', 
+-                 horizon_minutes = 15, 
+-                 strict_weekday_match = True,
+-                 disable_logs = False):
+-        super().__init__(disable_logs)
+-        self.datetime_col = datetime_col
+-        self.sensor_col = sensor_col
+-        self.value_col = value_col
+-        self.horizon_minutes = horizon_minutes
+-        self.strict_weekday_match = strict_weekday_match
+-        self.new_column_name = f'prev_weekday_value_h{self.horizon_minutes}'
+-
+-    def _get_previous_weekdays(self, dates: pd.Series) -> pd.Series:
+-        """
+-        Vectorized computation of previous weekday + horizon offset using Series.mask.
+-
+-        Args:
+-            dates (pd.Series): Series of datetime objects.
+-
+-        Returns:
+-            pd.Series: New timestamps adjusted backward to last weekday and forward by horizon.
+-        """
+-        self._log("Computing previous weekday timestamps with horizon offset.")
+-        prev = dates - pd.Timedelta(days=1)
+-        prev = prev.mask(prev.dt.weekday == 6, prev - pd.Timedelta(days=2))  # Sunday → Friday
+-        prev = prev.mask(prev.dt.weekday == 5, prev - pd.Timedelta(days=1))  # Saturday → Friday
+-        return prev + pd.Timedelta(minutes=self.horizon_minutes)
+-
+-    def transform(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+-        """
+-        Transforms the dataframe by adding the previous weekday value feature.
+-
+-        Args:
+-            df (pd.DataFrame): Input dataframe with sensor values.
+-
+-        Returns:
+-            Tuple[pd.DataFrame, List[str]]: DataFrame with new column and list of added column names.
+-        """
+-        self._log("Starting transformation to add previous weekday value feature.")
+-        df = df.copy()
+-        df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
+-
+-        self._log("Creating pivot table for efficient value lookup.")
+-        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+-        stacked = pivot.stack()
+-        stacked.index.names = [self.datetime_col, self.sensor_col]
+-
+-        self._log("Calculating lookup timestamps and filtering valid weekday pairs.")
+-        df['current_dayofweek'] = df[self.datetime_col].dt.weekday
+-        df['lookup_time'] = self._get_previous_weekdays(df[self.datetime_col])
+-        df['lookup_dayofweek'] = df['lookup_time'].dt.weekday
+-
+-        if self.strict_weekday_match:
+-            valid_mask = (df['current_dayofweek'] < 5) & (df['lookup_dayofweek'] < 5)
+-        else:
+-            valid_mask = pd.Series(True, index=df.index)
+-
+-        self._log("Performing reindex-based value lookup from pivoted data.")
+-        lookup_index = list(zip(df['lookup_time'], df[self.sensor_col]))
+-        lookup_values = stacked.reindex(lookup_index).values
+-        df[self.new_column_name] = np.where(valid_mask, lookup_values, np.nan)
+-
+-        self._log(f"Feature '{self.new_column_name}' successfully added to dataframe.")
+-        df.drop(columns=['current_dayofweek', 'lookup_time', 'lookup_dayofweek'], inplace=True)
+-
+-        return df, [self.new_column_name]
+-
+-
+-
+-
+-class TargetVariableCreator(LoggingMixin):
+-    """
+-    Adds a target variable for prediction (delta or GMAN correction).
+-    """
+-
+-    def __init__(
+-        self,
+-        horizon=15,
+-        sensor_col='sensor_id',
+-        datetime_col='date',
+-        value_col='value',
+-        gman_col='gman_prediction_orig',
+-        use_gman=False,
+-        disable_logs=False
+-    ):
+-        super().__init__(disable_logs)
+-        self.horizon = horizon
+-        self.sensor_col = sensor_col
+-        self.datetime_col = datetime_col
+-        self.value_col = value_col
+-        self.gman_col = gman_col
+-        self.use_gman = use_gman
+-
+-    def transform(self, df):
+-        self._log("Creating target variables.")
+-        df = df.sort_values(by=[self.sensor_col, self.datetime_col]).copy()
+-
+-        df['target_total_speed'] = df.groupby(self.sensor_col)[self.value_col].shift(-self.horizon)
+-        df['target_speed_delta'] = df['target_total_speed'] - df[self.value_col]
+-        self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
+-
+-        if self.use_gman:
+-            #df['target_gman_prediction'] = df.groupby(self.sensor_col)[self.gman_col].shift(-self.horizon)
+-            df['target'] = df['target_total_speed'] - df['gman_prediction_orig']
+-
+-            #check = df['target_total_speed'] - (df['target'] + df['gman_prediction_orig'])
+-            # if not np.allclose(check.fillna(0), 0):
+-            #     raise ValueError("Target variable is not a valid GMAN correction.")
+-
+-            self._log("GMAN correction target validated.")
+-            used_cols = ['target_total_speed', 'target_speed_delta', 'target_gman_prediction', 'target']
+-        else:
+-            df['target'] = df['target_speed_delta']
+-            used_cols = ['target_total_speed', 'target_speed_delta', 'target']
+-
+-        df = df.dropna(subset=['target'])
+-        self._log(f"Final target column ready. {df.shape[0]} rows retained after dropping NaNs.")
+-        return df, used_cols
+-    
+-    
+-    
+-    
+-class AdjacentSensorFeatureAdderDeprecated(LoggingMixin):
+-    def __init__(self,
+-                 sensor_dict_path='../data',
+-                 spatial_adj=5,
+-                 normalize_by_distance=True,
+-                 datetime_col='datetime',
+-                 value_col='value',
+-                 sensor_col='sensor_id',
+-                 fill_nans_value=-1,
+-                 disable_logs=False):
+-        super().__init__(disable_logs)
+-        self.sensor_dict_path = sensor_dict_path
+-        self.downstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'downstream_dict.json')))
+-        self.upstream_sensor_dict = json.load(open(os.path.join(sensor_dict_path, 'upstream_dict.json')))
+-        self.spatial_adj = spatial_adj
+-        self.normalize_by_distance = normalize_by_distance
+-        self.fill_nans_value = fill_nans_value
+-        self.datetime_col = datetime_col
+-        self.value_col = value_col
+-        self.sensor_col = sensor_col
+-        self.new_columns = []
+-
+-    def transform(self, df, current_smoothing=None, prev_smoothing=None):
+-        self._log("Adding adjacent sensor features.")
+-        
+-        if self.spatial_adj < 1:
+-            self._log("No adjacent sensors to add. Skipping.")
+-            return df, []
+-    
+-        
+-        pivot = df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+-        sensors = df[self.sensor_col].unique()
+-        
+-        
+-        # Drop any excess previously computed adjacent features
+-        for direction in ['upstream', 'downstream']:
+-            existing_cols = [col for col in df.columns if col.startswith(f'{direction}_sensor_') and not col.endswith('_id')]
+-            expected_cols = [f'{direction}_sensor_{i+1}' for i in range(self.spatial_adj)]
+-            to_drop = list(set(existing_cols) - set(expected_cols))
+-            if to_drop:
+-                df.drop(columns=to_drop, inplace=True)
+-                self._log(f"Dropped excess {direction} columns: {to_drop}")
+-
+-        for i in range(self.spatial_adj):
+-            down_col, up_col = f'downstream_sensor_{i+1}', f'upstream_sensor_{i+1}'
+-            if down_col in df.columns and up_col in df.columns and current_smoothing == prev_smoothing:
+-                self._log(f"Skipping {down_col} and {up_col}, they already exist in the df (max value of downstream: {df[down_col].max()}).")
+-                self.new_columns += [down_col, up_col]
+-                continue
+-            down_map, down_dist = {}, {}
+-            up_map, up_dist = {}, {}
+-
+-            for s in sensors:
+-                ds = self.downstream_sensor_dict.get(s, {})
+-                us = self.upstream_sensor_dict.get(s, {})
+-
+-                down_map[s] = ds.get('downstream_sensor', [None]*self.spatial_adj)[i]
+-                down_dist[s] = ds.get('downstream_distance', [np.nan]*self.spatial_adj)[i]
+-                up_map[s] = us.get('upstream_sensor', [None]*self.spatial_adj)[i]
+-                up_dist[s] = us.get('upstream_distance', [np.nan]*self.spatial_adj)[i]
+-
+-            df[f'{down_col}_id'] = df[self.sensor_col].map(down_map)
+-            df[f'{up_col}_id'] = df[self.sensor_col].map(up_map)
+-
+-            def safe_lookup(date, sid):
+-                try:
+-                    return np.nan if pd.isna(sid) else pivot.at[date, sid]
+-                except KeyError:
+-                    return np.nan
+-
+-            df[down_col] = [safe_lookup(d, s) for d, s in zip(df[self.datetime_col], df[f'{down_col}_id'])]
+-            df[up_col] = [safe_lookup(d, s) for d, s in zip(df[self.datetime_col], df[f'{up_col}_id'])]
+-
+-            if self.normalize_by_distance:
+-                df[down_col] = df[down_col] / 3.6 / df[self.sensor_col].map(down_dist)
+-                df[up_col] = df[up_col] / 3.6 / df[self.sensor_col].map(up_dist)
+-
+-            df.drop(columns=[f'{down_col}_id', f'{up_col}_id'], inplace=True)
+-            df[down_col].fillna(self.fill_nans_value, inplace=True)
+-            df[up_col].fillna(self.fill_nans_value, inplace=True)
+-            self.new_columns += [down_col, up_col]
+-            self._log(f"Added {down_col}, {up_col}")
+-
+-        return df, self.new_columns
+-
+-    
+-    
+-
+-
+diff --git a/helper_utils.py b/helper_utils.py
+index ba60d5c..ade643b 100644
+--- a/helper_utils.py
++++ b/helper_utils.py
+@@ -8,17 +8,12 @@ import glob
+ from sklearn.preprocessing import StandardScaler, MinMaxScaler
+ import numpy as np
+ import logging
+-from pptx import Presentation
+-from pptx.util import Inches, Pt
+-from pptx.enum.text import PP_ALIGN
+-import subprocess
+ from typing import List, Dict, Optional, Union, Tuple
+-import warnings 
+ import json
+ import pandas as pd
+ import plotly.graph_objects as go
+ from typing import Optional, Callable, List, Union, Dict, Tuple
+-import warnings
++
+ 
+ 
+ 
+diff --git a/model_tuning.py b/model_tuning.py
+index 85bee39..0ccb34b 100644
+--- a/model_tuning.py
++++ b/model_tuning.py
+@@ -46,6 +46,9 @@ class ModelTuner:
+         self.ann_model_name = ann_model_name if ann_model_name else 'Neural_Network'
+         self.X_train_normalized, self.X_test_normalized = normalize_data(
+             self.X_train, self.X_test, use_minmax_norm=self.use_min_max_norm)
++        
++        
++        
+ 
+     def get_cv_splitter(self):
+         """Returns the appropriate cross-validation splitter."""
+diff --git a/sensor_encoder.py b/sensor_encoder.py
+deleted file mode 100644
+index e4edc7c..0000000
+--- a/sensor_encoder.py
++++ /dev/null
+@@ -1,78 +0,0 @@
+-# sensor_encoder.py
+-from abc import ABC, abstractmethod
+-import pandas as pd
+-from .helper_utils import LoggingMixin
+-
+-class SensorEncodingStrategy(ABC):
+-    """
+-    Abstract base class for all sensor encoding strategies.
+-    """
+-    @abstractmethod
+-    def encode(self, df: pd.DataFrame, col: str, is_train: pd.Series) -> pd.DataFrame:
+-        """
+-        Encodes the given column in the dataframe.
+-
+-        Args:
+-            df (pd.DataFrame): Full dataset.
+-            col (str): Column name to encode.
+-            is_train (pd.Series): Boolean mask for training rows.
+-
+-        Returns:
+-            pd.DataFrame: Modified dataframe with encoded column.
+-        """
+-        pass
+-
+-
+-class OrdinalSensorEncoder(SensorEncodingStrategy, LoggingMixin):
+-    """
+-    Encodes sensor IDs with ordinal integers.
+-    """
+-    def __init__(self, disable_logs=False):
+-        super().__init__(disable_logs)
+-        self.mapping = {}
+-
+-    def encode(self, df, col, is_train):
+-        self._log("Applying ordinal encoding to sensor IDs.")
+-        if not self.mapping:
+-            unique_ids = sorted(df.loc[is_train, col].unique())
+-            self.mapping = {sid: idx for idx, sid in enumerate(unique_ids)}
+-            self._log(f"Generated ordinal mapping for {len(self.mapping)} sensors.")
+-        df[col] = df[col].map(self.mapping)
+-        return df
+-
+-
+-class MeanSensorEncoder(SensorEncodingStrategy, LoggingMixin):
+-    """
+-    Encodes sensor IDs using the average speed value from the training set.
+-    """
+-    def __init__(self, disable_logs=False):
+-        super().__init__(disable_logs)
+-        self.mapping = {}
+-
+-    def encode(self, df, col, is_train):
+-        self._log("Applying mean encoding to sensor IDs using training data.")
+-        if not self.mapping:
+-            self.mapping = df.loc[is_train].groupby(col)['value'].mean().to_dict()
+-            self._log(f"Generated mean mapping for {len(self.mapping)} sensors.")
+-        df[col] = df[col].map(self.mapping)
+-        return df
+-
+-
+-class OneHotSensorEncoder(SensorEncodingStrategy, LoggingMixin):
+-    """
+-    Applies one-hot encoding to the sensor column.
+-    """
+-    def __init__(self, disable_logs=False):
+-        super().__init__(disable_logs)
+-
+-    def encode(self, df, col, is_train):
+-        self._log("Applying one-hot encoding to sensor IDs.")
+-        return pd.get_dummies(df, columns=[col])
+-    
+-
+-
+-
+-    
+-    
+-
+-

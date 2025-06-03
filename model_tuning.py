@@ -46,6 +46,9 @@ class ModelTuner:
         self.ann_model_name = ann_model_name if ann_model_name else 'Neural_Network'
         self.X_train_normalized, self.X_test_normalized = normalize_data(
             self.X_train, self.X_test, use_minmax_norm=self.use_min_max_norm)
+        
+        
+        
 
     def get_cv_splitter(self):
         """Returns the appropriate cross-validation splitter."""
