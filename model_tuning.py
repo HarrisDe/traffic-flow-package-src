@@ -11,13 +11,15 @@ from .helper_utils import normalize_data
 import pickle
 import warnings
 import numpy as np
-
+import time
+from typing import Dict, Optional, Tuple
 
 
 class ModelTunerXGB:
     """
     A class for performing hyperparameter tuning and model evaluation for XGBoost regression models.
     Supports time series-aware cross-validation or standard k-fold.
+    Automatically adjusts prediction batch size based on available GPU memory.
     """
 
     def __init__(
@@ -31,7 +33,9 @@ class ModelTunerXGB:
         n_splits: int = 3,
         best_model_name_string_start: str = 'best_model_',
         model_path: Optional[str] = None,
-        XGBoost_model_name: Optional[str] = None
+        XGBoost_model_name: Optional[str] = None,
+        predict_in_batches: bool = True,
+        gpu_memory_gb: Optional[float] = 40.0  # Default to 40GB if unspecified
     ) -> None:
         """
         Initialize the ModelTuner instance.
@@ -47,6 +51,8 @@ class ModelTunerXGB:
             best_model_name_string_start: Prefix for saved model filenames.
             model_path: Directory to save best models.
             XGBoost_model_name: Custom name for the XGBoost model.
+            predict_in_batches: Whether to use batched prediction.
+            gpu_memory_gb: Amount of GPU memory in GB (used to estimate batch size).
         """
         self.X_train = X_train
         self.X_test = X_test
@@ -60,6 +66,24 @@ class ModelTunerXGB:
         self.model_path = model_path if model_path else './models'
         os.makedirs(self.model_path, exist_ok=True)
         self.XGBoost_model_name = XGBoost_model_name or 'XGBoost'
+        self.predict_in_batches = predict_in_batches
+        self.batch_size = self._estimate_batch_size(gpu_memory_gb)
+
+    def _estimate_batch_size(self ,gpu_memory_gb: float, use_available_memory_ratio: float = 0.5) -> int:
+        """
+        Estimate batch size for prediction based on GPU memory.
+
+        Args:
+            gpu_memory_gb: Total available GPU memory in GB.
+
+        Returns:
+            Estimated batch size as an integer.
+        """
+        bytes_per_float32 = 4
+        bytes_per_row = self.X_test.shape[1] * bytes_per_float32
+        available_bytes = gpu_memory_gb * 1e9 * use_available_memory_ratio  # Use 50% of available GPU memory
+        batch_size = int(available_bytes // bytes_per_row)
+        return max(1000, min(batch_size, len(self.X_test)))
 
     def get_cv_splitter(self):
         """Return appropriate cross-validation splitter."""
@@ -82,11 +106,28 @@ class ModelTunerXGB:
         median_ae = np.median(absolute_errors)
         median_ae_std = np.std(absolute_errors)
         rmse = np.sqrt(np.mean(absolute_errors**2))
-        safe_mape = np.where(y_true == 0, np.nan,
-                             absolute_errors / y_true) * 100
+        safe_mape = np.where(y_true == 0, np.nan, absolute_errors / y_true) * 100
         mape = np.nanmean(safe_mape)
         mape_std = np.nanstd(safe_mape)
         return mae, mae_std, median_ae, median_ae_std, rmse, mape, mape_std
+
+    def _predict_in_batches(self, model: xgb.XGBRegressor, X: np.ndarray) -> np.ndarray:
+        """
+        Predict in smaller batches to avoid memory issues on large datasets.
+
+        Args:
+            model: Trained XGBoost model.
+            X: Input features to predict.
+
+        Returns:
+            Numpy array of predictions.
+        """
+        n_rows = X.shape[0]
+        preds = []
+        for start in range(0, n_rows, self.batch_size):
+            end = min(start + self.batch_size, n_rows)
+            preds.append(model.predict(X[start:end]))
+        return np.concatenate(preds)
 
     def tune_xgboost(
         self,
@@ -111,8 +152,7 @@ class ModelTunerXGB:
             'n_estimators': [1000, 750, 500, 250]
         }
 
-        model = self._create_xgboost_model(
-            use_gpu, objective, suppress_output, n_jobs)
+        model = self._create_xgboost_model(use_gpu, objective, suppress_output, n_jobs)
         cv_splitter = self.get_cv_splitter()
 
         grid = GridSearchCV(
@@ -133,14 +173,11 @@ class ModelTunerXGB:
         end_train = time()
         training_time = end_train - start_train
 
-        best_model_path, best_params_ = self._finalize_model(
-            best_model, grid.best_params_, model_name)
+        best_model_path, best_params_ = self._finalize_model(best_model, grid.best_params_, model_name)
 
         if not suppress_output:
-            print(
-                f"Retraining time with best params: {training_time:.2f} seconds")
-            print(
-                f"Total hyperparameter tuning time: {total_time:.2f} seconds")
+            print(f"Retraining time with best params: {training_time:.2f} seconds")
+            print(f"Total hyperparameter tuning time: {total_time:.2f} seconds")
 
         return best_model_path, best_params_, training_time, total_time
 
@@ -158,12 +195,15 @@ class ModelTunerXGB:
 
     def _finalize_model(self, best_model: xgb.XGBRegressor, best_params: Dict, model_name: str) -> Tuple[str, Dict]:
         """Save the best model and return its path and hyperparameters."""
-        y_pred = best_model.predict(self.X_test)
+        if self.predict_in_batches:
+            y_pred = self._predict_in_batches(best_model, self.X_test)
+        else:
+            y_pred = best_model.predict(self.X_test)
+
         self._calculate_errors(self.y_test, y_pred)
 
         # Compute naive baseline
-        naive_pred = np.abs(
-            self.X_test['value'] - (self.y_test + self.X_test['value']))
+        naive_pred = np.abs(self.X_test['value'] - (self.y_test + self.X_test['value']))
         self._calculate_errors(self.y_test, naive_pred)
 
         best_model_path = self._save_model(model_name, best_model)
