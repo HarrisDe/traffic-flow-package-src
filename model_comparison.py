@@ -71,6 +71,11 @@ class ModelEvaluator:
                            np.where(denominator == 0, 1, denominator))
         return smape * 100, smape_std * 100
 
+    def smape(self, y_true, y_pred):
+        denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
+        smape_vals = np.abs(y_pred - y_true) / np.where(denominator == 0, 1, denominator)
+        return np.mean(smape_vals) * 100, np.std(smape_vals) * 100
+
     def evaluate_model_from_path(self, model_path, print_results=True):
         model = self.load_model_from_path(model_path)
 
@@ -90,7 +95,7 @@ class ModelEvaluator:
         mae = mean_absolute_error(self.y_test, y_pred)
         median_ae = median_absolute_error(self.y_test, y_pred)
         rmse = mean_squared_error(self.y_test, y_pred, squared=False)
-        smape, smape_sted = self.smape(self.y_test, y_pred)
+        smape, smape_std = self.smape(self.y_test, y_pred)
         naive_smape, naive_smape_std = self.smape(
             self.y_test, self.X_test['value'])
 
@@ -117,7 +122,7 @@ class ModelEvaluator:
             'Median_AE_std': np.std(abs_errors),
             'RMSE_std': np.std((self.y_test - y_pred) ** 2),
             'MAPE_std': mape_std * 100,
-            'SMAPE_std': naive_smape_std
+            'SMAPE_std': smape_std
         }
 
         if self.target_is_gman_error_prediction:
@@ -138,7 +143,7 @@ class ModelEvaluator:
             'Naive_Median_AE_std': np.std(naive_error),
             'Naive_RMSE_std': np.std(naive_error ** 2),
             'Naive_MAPE_std': naive_mape_std * 100,
-            'Naive_SMAPE_std': np.std(np.abs(self.y_test - self.X_test['value']) / ((np.abs(self.y_test) + np.abs(self.X_test['value'])) / 2.0))
+            'Naive_SMAPE_std': naive_smape_std
         }
 
         if self.rounding is not None:
@@ -160,12 +165,6 @@ class ModelEvaluator:
             "naive_metrics": naive_metrics,
             "naive_metrics_std": naive_metrics_std
         }
-
-    def smape(self, y_true, y_pred):
-        denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
-        smape = np.mean(np.abs(y_pred - y_true) /
-                        np.where(denominator == 0, 1, denominator))
-        return smape * 100
 
     def print_evaluation_results(self, metrics, metrics_std, naive_metrics, naive_metrics_std):
         print("\n--- Evaluation Results ---")
