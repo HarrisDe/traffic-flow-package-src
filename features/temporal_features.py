@@ -3,49 +3,7 @@ from typing import List, Optional, Tuple
 from .base import FeatureTransformer 
 
 
-class TemporalLagFeatureAdder(FeatureTransformer):
-    def __init__(self, lags=3, relative=False, fill_nans_value=-1, disable_logs=False,
-                 sensor_col='sensor_id', value_col='value', datetime_col='datetime',epsilon = 1e-5):
-        super().__init__(disable_logs)
-        self.lags = lags
-        self.relative = relative
-        self.fill_nans_value = fill_nans_value
-        self.sensor_col = sensor_col
-        self.value_col = value_col
-        self.datetime_col = datetime_col
-        self.new_columns = []
-        self.epsilon = epsilon
-
-    def transform(self, df, current_smoothing=None, prev_smoothing=None):
-        self._log(f"Adding {'relative' if self.relative else 'absolute'} lags (lags={self.lags})")
-        col_name_start = f"{'relative_diff_lag' if self.relative else 'lag'}"
-        existing_cols = [col for col in df.columns if col.startswith(col_name_start)]
-        expected_cols = [f'{col_name_start}_{i+1}' for i in range(self.lags)]
-        to_drop = list(set(existing_cols) - set(expected_cols))
-        if to_drop:
-            df.drop(columns=to_drop, inplace=True)
-            self._log(f"Dropped excess lag columns: {to_drop}")
-
-        for i in range(1, self.lags + 1):
-            col_name = f"{'relative_diff_lag' if self.relative else 'lag'}{i}"
-            if col_name in df.columns and current_smoothing == prev_smoothing:
-                self._log(f"Skipping already existing column: {col_name}")
-                self.new_columns.append(col_name)
-                continue
-            shifted = df.groupby(self.sensor_col)[self.value_col].shift(i)
-
-            if self.relative:
-                df[col_name] = (df[self.value_col] - shifted) / (shifted + self.epsilon)
-            else:
-                df[col_name] = shifted - df[self.value_col]
-
-            df[col_name].fillna(self.fill_nans_value, inplace=True)
-            self.new_columns.append(col_name)
-
-        return df, self.new_columns
     
-
-
 class TemporalLagFeatureAdder(FeatureTransformer):
     """
     Adds lag-based features to capture past values or relative differences for each sensor.
