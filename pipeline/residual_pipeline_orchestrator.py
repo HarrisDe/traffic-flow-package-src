@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import warnings
-from traffic_flow_package_src.helper_utils import LoggingMixin
+from traffic_flow_package_src.utils.helper_utils import LoggingMixin
 
 
 

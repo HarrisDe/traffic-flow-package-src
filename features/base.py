@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import pandas as pd
-from ..helper_utils import LoggingMixin 
+from ..utils.helper_utils import LoggingMixin 
 
 class SensorEncodingStrategy(ABC, LoggingMixin):
     """

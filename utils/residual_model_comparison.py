@@ -6,8 +6,8 @@ import numpy as np
 from keras.models import load_model
 import matplotlib.patheffects as PathEffects
 #from .data_processing import TrafficFlowDataProcessing
-from .helper_utils import LoggingMixin
-from .post_processing import PredictionCorrection
+from .utils.helper_utils import LoggingMixin
+from .post_processing.post_processing import PredictionCorrection
 import seaborn as sns
 sns.set_style('darkgrid')
 import warnings

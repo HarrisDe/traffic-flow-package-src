@@ -1,15 +1,13 @@
 # Import main classes for easy access
-from .data_loader_orchestrator import *
-from .data_pipeline_orchestrator import *
-from .constants import *
-from .helper_utils import *
-from .model_tuning import *
-from .model_comparison import *  #Need to fix this import by using data_pipeline_orchestrator instead of TrafficFlowDataProcessing
-from .post_processing import *
-from .visualization_utils_with_residual_model import *
-from .visualization_utils import *
-from .residual_pipeline_orchestrator import *
-from .residual_model_comparison import *
+from .data_loading.data_loader_orchestrator import *
+from .pipeline.data_pipeline_orchestrator import *
+from .constants.constants import *
+from .utils.helper_utils import *
+from .modeling.model_tuning import *
+from .evaluation.model_comparison import *  #Need to fix this import by using data_pipeline_orchestrator instead of TrafficFlowDataProcessing
+from .post_processing.post_processing import *
+from .pipeline.residual_pipeline_orchestrator import *
+
 
 
 # Specify classes available for import when using *
