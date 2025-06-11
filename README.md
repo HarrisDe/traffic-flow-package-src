@@ -19,26 +19,18 @@ It is designed to forecast short-term traffic speed across multiple sensors, wit
 
 ## Repository Structure
 
+```
 traffic_flow_package_src/
-├── constants/
-│   └─ Project-wide constants (e.g., column names)
-├── data_loading/
-│   └─ Data loading and preprocessing logic
-├── features/
-│   └─ Feature engineering methods
-├── modeling/
-│   └─ Model training and tuning
-├── evaluation/
-│   └─ Model evaluation and metric reporting
-├── pipeline/
-│   └─ End-to-end orchestration pipeline
-├── post_processing/
-│   └─ Plotting utilities and post-processing of predictions
-├── utils/
-│   └─ Helper functions
-├── README.md
-└─ This file
-
+├── constants/              # Project-wide constants (e.g., column names)
+├── data_loading/           # Data loading and preprocessing logic
+├── features/               # Feature engineering methods
+├── modeling/               # Model training and tuning
+├── evaluation/             # Model evaluation and metric reporting
+├── pipeline/               # End-to-end orchestration pipeline
+├── post_processing/        # Plotting utilities and post-processing of predictions
+├── utils/                  # Helper functions
+├── README.md               # This file
+```
 
 
 ##  Example Use
