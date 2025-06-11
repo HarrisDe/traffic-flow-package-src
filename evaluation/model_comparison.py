@@ -14,6 +14,7 @@ import seaborn as sns
 sns.set_style('darkgrid')
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+from time import time
 
 class ModelEvaluator:
     """
@@ -77,6 +78,8 @@ class ModelEvaluator:
         return np.mean(smape_vals) * 100, np.std(smape_vals) * 100
 
     def evaluate_model_from_path(self, model_path, print_results=True):
+        
+        time_start = time()
         model = self.load_model_from_path(model_path)
 
         if 'neural' in model_path.lower():
@@ -90,7 +93,9 @@ class ModelEvaluator:
 
         self.y_pred_before_reconstruction = y_pred.copy()
         y_pred = self.reconstruct_y(y_pred)
-
+        time_end = time()
+        inference_time = time_end - time_start
+        inference_time_per_sample = inference_time / len(self.X_test)
         abs_errors = np.abs(self.y_test - y_pred)
         mae = mean_absolute_error(self.y_test, y_pred)
         median_ae = median_absolute_error(self.y_test, y_pred)
@@ -114,7 +119,9 @@ class ModelEvaluator:
             'Median_AE': median_ae,
             'RMSE': rmse,
             'MAPE': mape * 100,
-            'SMAPE': smape
+            'SMAPE': smape,
+            'inference_time':inference_time,
+            'inference_time_per_sample': inference_time_per_sample
         }
 
         metrics_std = {
