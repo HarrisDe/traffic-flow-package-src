@@ -17,7 +17,7 @@ It is designed to forecast short-term traffic speed across multiple sensors, wit
 
 ---
 
-## Repository Structure
+### Repository Structure
 
 traffic_flow_package_src/
 │
@@ -54,8 +54,8 @@ me = ModelEvaluator(
         X_test,
         y_test,
         y_train,
-        df_for_ML=tdp.df,  # full df containing train and test sets, and respective features and target
-    )
+        df_for_ML=tdp.df)  # full df containing train and test sets, and respective features and target
+    
 
 ### Get performance metrics 
 results = me.evaluate_model_from_path(model_path) # results is a dictionary
