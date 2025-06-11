@@ -17,19 +17,27 @@ It is designed to forecast short-term traffic speed across multiple sensors, wit
 
 ---
 
-### Repository Structure
+## Repository Structure
 
 traffic_flow_package_src/
-│
-├── constants/              # Project-wide constant values (e.g., column names)
-├── data_loading/           # Data loading and preprocessing logic
-├── features/               # Feature engineering methods
-├── modeling/               # Model training and tuning
-├── evaluation/             # Model evaluation and metric reporting
-├── pipeline/               # End-to-end orchestration pipeline
-├── post_processing/        # Plotting utilities, post-processing of predictions
-├── utils/                  # Helper functions
-├── README.md               # This file
+├── constants/
+│   └─ Project-wide constants (e.g., column names)
+├── data_loading/
+│   └─ Data loading and preprocessing logic
+├── features/
+│   └─ Feature engineering methods
+├── modeling/
+│   └─ Model training and tuning
+├── evaluation/
+│   └─ Model evaluation and metric reporting
+├── pipeline/
+│   └─ End-to-end orchestration pipeline
+├── post_processing/
+│   └─ Plotting utilities and post-processing of predictions
+├── utils/
+│   └─ Helper functions
+├── README.md
+└─ This file
 
 
 
@@ -41,11 +49,13 @@ file_path = 'data/example_file.parquet'
 
 ### Create train/test splits
 tdp = TrafficDataPipelineOrchestrator(orig_file_path)
+
 X_train, X_test, y_train, y_test = tdp.run_pipeline()
 
 ### HP-tune to find best XGB model
 mt = ModelTunerXGB(X_train, X_test, y_train, y_test)
-    model_path, best_params, training_time, total_time = mt.tune_xgboost(
+
+model_path, best_params, training_time, total_time = mt.tune_xgboost(
         objective="reg:pseudohubererror",
         use_gpu=True)
 
@@ -83,6 +93,7 @@ If you're interested in toy datasets or have specific use cases, feel free to op
 👤 Author
 
 Harris Deralas
+
 📧 [harideralas@gmail.com](mailto:harideralas@gmail.com)
 
 🔗 [LinkedIn](https://www.linkedin.com/in/harris-deralas)
