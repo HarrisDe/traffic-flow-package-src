@@ -36,7 +36,7 @@ traffic_flow_package_src/
 ##  Example Use
 
 To run a full modeling pipeline:
-
+```
 file_path = 'data/example_file.parquet'
 
 ### Create train/test splits
@@ -65,7 +65,7 @@ metrics = results['metrics']
 metrics_std = results['metrics_std']
 naive_metrics = results['naive_metrics']
 naive_metrics_std = results['naive_metrics_std']
-
+```
 ##  Deployment
 Parts of this repository are intended to be deployed on the EMERALDS platform using [KServe](https://github.com/kserve/kserve).  
 Due to confidentiality constraints, it is currently uncertain whether this deployment setup can be made publicly available or forked from this repository.
