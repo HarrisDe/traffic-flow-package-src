@@ -39,17 +39,17 @@ To run a full modeling pipeline:
 
 file_path = 'data/example_file.parquet'
 
-# Create train/test splits
+### Create train/test splits
 tdp = TrafficDataPipelineOrchestrator(orig_file_path)
 X_train, X_test, y_train, y_test = tdp.run_pipeline()
 
-# HP-tune to find best XGB model
+### HP-tune to find best XGB model
 mt = ModelTunerXGB(X_train, X_test, y_train, y_test)
     model_path, best_params, training_time, total_time = mt.tune_xgboost(
         objective="reg:pseudohubererror",
         use_gpu=True)
 
-# Evaluate model
+### Evaluate model
 me = ModelEvaluator(
         X_test,
         y_test,
@@ -57,7 +57,7 @@ me = ModelEvaluator(
         df_for_ML=tdp.df,  # full df containing train and test sets, and respective features and target
     )
 
-# Get performance metrics 
+### Get performance metrics 
 results = me.evaluate_model_from_path(model_path) # results is a dictionary
 metrics = results['metrics']
 metrics_std = results['metrics_std']
@@ -84,7 +84,10 @@ If you're interested in toy datasets or have specific use cases, feel free to op
 
 Harris Deralas
 📧 [harideralas@gmail.com](mailto:harideralas@gmail.com)
+
 🔗 [LinkedIn](https://www.linkedin.com/in/harris-deralas)
+
 Freelance Machine Learning Engineer
+
 Currently affiliated with Data Science Lab, University of Piraeus
 
