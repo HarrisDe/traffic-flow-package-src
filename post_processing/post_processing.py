@@ -14,6 +14,7 @@ import pickle
 import time
 import json
 from pykalman import KalmanFilter
+from typing import Optional
 import re
 # Configure logging
 logging.basicConfig(
@@ -73,7 +74,7 @@ class PredictionCorrection:
         X_test: pd.DataFrame,
         y_test: Union[np.ndarray, pd.Series],
         df_for_ML: pd.DataFrame,
-        rounding: int | None = 2,
+        rounding: Optional[int] = 2,
     ) -> None:
         # Store main arrays
         self.X_test = X_test.reset_index(drop=True)

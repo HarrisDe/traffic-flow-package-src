@@ -94,6 +94,7 @@ class ModelEvaluator:
         self.y_pred_before_reconstruction = y_pred.copy()
         y_pred = self.reconstruct_y(y_pred)
         time_end = time()
+        self.y_pred = y_pred
         inference_time = time_end - time_start
         inference_time_per_sample = inference_time / len(self.X_test)
         abs_errors = np.abs(self.y_test - y_pred)
@@ -103,6 +104,7 @@ class ModelEvaluator:
         smape, smape_std = self.smape(self.y_test, y_pred)
         naive_smape, naive_smape_std = self.smape(
             self.y_test, self.X_test['value'])
+        
 
         if self.calculate_mape_with_handling_zero_values:
             mape, mape_std, naive_mape, naive_mape_std = self.calculate_mape_in_case_of_zero_values(

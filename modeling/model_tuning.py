@@ -11,7 +11,7 @@ from ..utils.helper_utils import normalize_data
 import pickle
 import warnings
 import numpy as np
-import time
+from time import time
 from typing import Dict, Optional, Tuple
 
 
