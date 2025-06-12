@@ -1,0 +1,16 @@
+diff --git a/evaluation/model_comparison.py b/evaluation/model_comparison.py
+index c915ebc..f076664 100644
+--- a/evaluation/model_comparison.py
++++ b/evaluation/model_comparison.py
+@@ -79,9 +79,9 @@ class ModelEvaluator:
+ 
+     def evaluate_model_from_path(self, model_path, print_results=True):
+         
+-        time_start = time()
++        
+         model = self.load_model_from_path(model_path)
+-
++        time_start = time()
+         if 'neural' in model_path.lower():
+             _, X_test_normalized = normalize_data(X_test=self.X_test)
+             y_pred = model.predict(X_test_normalized).flatten()

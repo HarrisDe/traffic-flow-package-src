@@ -79,9 +79,9 @@ class ModelEvaluator:
 
     def evaluate_model_from_path(self, model_path, print_results=True):
         
-        time_start = time()
+        
         model = self.load_model_from_path(model_path)
-
+        time_start = time() # start measuring inference time after model is loaded to exclude model loading overhead time
         if 'neural' in model_path.lower():
             _, X_test_normalized = normalize_data(X_test=self.X_test)
             y_pred = model.predict(X_test_normalized).flatten()
