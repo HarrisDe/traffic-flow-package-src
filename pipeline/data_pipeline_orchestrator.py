@@ -193,7 +193,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             self.feature_log['weather_dropped'] = dropped_cols
 
         
-
+        df['date_of_prediction'] = df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
         # Step 9: Target Variable
         target_creator = TargetVariableCreator(
             horizon=horizon,
@@ -207,7 +207,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.feature_log['target_variables'] = target_cols
 
         self.df = df
-        self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
+        #self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
         self.all_added_features = list(set(col for cols in self.feature_log.values() for col in cols))
 
         train_df = df[~df['test_set']].copy()

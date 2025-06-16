@@ -348,3 +348,110 @@ def load_adjacency_dicts(
 
     return _load(upstream_path, "Upstream"), _load(downstream_path, "Downstream")
 
+
+def optimize_parquet_file(
+    file_path: str,
+    output_path: str = None,
+    drop_columns: list = None,
+    round_floats: int = 3,
+    convert_sensor_to_category: bool = True,
+    reduce_datetime_precision: str = "s",
+    convert_floats_to_str: bool = False,
+    compression: str = "zstd",
+    sort_by: list = None,
+    partition_cols: list = None,
+    verbose: bool = True,
+):
+    """
+    Optimize a Parquet file to reduce size.
+    Can be used to prepare (inference) data for efficient storage and faster loading.
+
+    Parameters:
+        file_path (str): Path to input Parquet file.
+        output_path (str): Where to save the optimized file. If None, auto-generated.
+        drop_columns (list): Columns to drop from the DataFrame.
+        round_floats (int): Number of decimals to round float columns.
+        convert_sensor_to_category (bool): Whether to cast 'sensor_id' to category.
+        reduce_datetime_precision (str): Use 's' for seconds, 'ms' for milliseconds, etc.
+        convert_floats_to_str (bool): If True, converts rounded float columns to string.
+                                      Useful for max compression (but kills numeric ops).
+        compression (str): Compression type, e.g. 'zstd', 'snappy', or None.
+        sort_by (list): Columns to sort the DataFrame by (improves compression).
+        partition_cols (list): If set, partitions output Parquet file by these columns.
+        verbose (bool): Print file size comparison.
+
+    Returns:
+        pd.DataFrame: The optimized DataFrame.
+    """
+    # Load file
+    df = pd.read_parquet(file_path)
+    
+    if verbose:
+        original_size = os.path.getsize(file_path) / (1024 * 1024)
+
+    # Drop columns if requested
+    if drop_columns:
+        df.drop(columns=drop_columns, inplace=True)
+
+    # Convert sensor_id to category
+    if convert_sensor_to_category and 'sensor_id' in df.columns:
+        df['sensor_id'] = df['sensor_id'].astype('category')
+
+    # Reduce datetime precision
+    if 'date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['date']):
+        df['date'] = df['date'].astype(f'datetime64[{reduce_datetime_precision}]')
+
+    # Downcast float64 to float32
+    float64_cols = df.select_dtypes(include=['float64']).columns
+    df[float64_cols] = df[float64_cols].astype('float32')
+
+    # Identify all float columns again (now all should be float32)
+    float_cols = df.select_dtypes(include=['float32']).columns
+
+    # Round float values
+    df[float_cols] = df[float_cols].round(round_floats)
+
+    # Optional: Convert floats to strings for better dictionary compression
+    if convert_floats_to_str:
+        df[float_cols] = df[float_cols].astype(str)
+
+    # Sort before saving
+    if sort_by:
+        df.sort_values(by=sort_by, inplace=True)
+
+    # Determine output path
+    if output_path is None:
+        if convert_floats_to_str:
+            output_path = file_path.replace(".parquet", "_optimized_with_float_to_str.parquet")
+        else:
+            output_path = file_path.replace(".parquet", "_optimized.parquet")
+
+    y_test_col = [col for col in df.columns if col.startswith('y_test_h_')]
+    print(f"y_test_col: {y_test_col}")
+    df.rename(columns={y_test_col[0]: 'y_test'}, inplace=True)
+    
+    # Save the result
+    if partition_cols:
+        df.to_parquet(
+            output_path,
+            compression=compression,
+            engine="pyarrow",
+            index=False,
+            partition_cols=partition_cols,
+            use_dictionary=True
+        )
+    else:
+        df.to_parquet(
+            output_path,
+            compression=compression,
+            engine="pyarrow",
+            index=False,
+            use_dictionary=True
+        )
+
+    if verbose:
+        optimized_size = os.path.getsize(output_path) / (1024 * 1024)
+        print(f"Original: {original_size:.2f} MB → Optimized: {optimized_size:.2f} MB ({100 * optimized_size/original_size:.1f}% of original)")
+
+    return df
+
