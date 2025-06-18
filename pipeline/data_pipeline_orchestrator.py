@@ -2,7 +2,7 @@ from ..features.sensor_encoder import MeanSensorEncoder, OrdinalSensorEncoder, O
 from ..features.calendar_features import DateTimeFeatureEngineer
 from ..features.temporal_features import TemporalLagFeatureAdder
 from ..features.congestion_features import CongestionFeatureEngineer
-from ..features.historical_reference_features import PreviousWeekdayValueFeatureEngineer
+from ..features.historical_reference_features import PreviousWeekdayValueFeatureEngineer,PreviousWeekdayWindowFeatureEngineer
 from ..features.adjacent_features import AdjacentSensorFeatureAdder
 from ..features.target_variable_feature import TargetVariableCreator
 from ..features.misc_features import WeatherFeatureDropper
@@ -86,10 +86,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         use_median_instead_of_mean_smoothing=False,
         drop_weather=True,
         add_previous_weekday_feature=True,
-        strict_weekday_match=True
+        previous_weekday_window_min= 5
     ):
-        if not add_previous_weekday_feature and strict_weekday_match is not None:
-            warnings.warn("'strict_weekday_match' has no effect since 'add_previous_weekday_feature' is False")
 
         smoothing_id = (
             f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
@@ -175,13 +173,27 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
 
         # Step 6: Previous Weekday
         if add_previous_weekday_feature:
-            prevday = PreviousWeekdayValueFeatureEngineer(
+            # prevday = PreviousWeekdayValueFeatureEngineer(
+            #     datetime_col=self.datetime_col,
+            #     sensor_col=self.sensor_col,
+            #     value_col=self.value_col,
+            #     horizon_minutes=horizon,
+            #     strict_weekday_match=strict_weekday_match,
+            #     disable_logs=self.disable_logs
+            # )
+            
+
+            prevday = PreviousWeekdayWindowFeatureEngineer(
                 datetime_col=self.datetime_col,
                 sensor_col=self.sensor_col,
                 value_col=self.value_col,
-                horizon_minutes=horizon,
-                strict_weekday_match=strict_weekday_match,
+                horizon_min=horizon,
+                window_before_min = previous_weekday_window_min,
+                window_after_min = previous_weekday_window_min,
+                step_min=1,
+                aggs=[],
                 disable_logs=self.disable_logs
+
             )
             df, prevday_cols = prevday.transform(df)
             self.feature_log['previous_day_features'] = prevday_cols
