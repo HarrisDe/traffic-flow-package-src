@@ -34,7 +34,7 @@ class ModelTunerXGB:
         best_model_name_string_start: str = 'best_model_',
         model_path: Optional[str] = None,
         XGBoost_model_name: Optional[str] = None,
-        predict_in_batches: bool = True,
+        predict_in_batches: bool = False,
         gpu_memory_gb: Optional[float] = 40.0  # Default to 40GB if unspecified
     ) -> None:
         """
