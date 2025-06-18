@@ -20,13 +20,44 @@ from typing import Optional, Callable, List, Union, Dict, Tuple
 # Type alias for upstream/downstream dictionary structure
 UpDownDict = Dict[str, Dict[str, List[Union[str, float, None]]]]
 
-class LoggingMixin:
-    def __init__(self, disable_logs=False):
-        self.disable_logs = disable_logs
+# class LoggingMixin:
+#     def __init__(self, disable_logs=False):
+#         self.disable_logs = disable_logs
 
-    def _log(self, message):
-        if not self.disable_logs:
-            logging.info(message)
+#     def _log(self, message):
+#         if not self.disable_logs:
+#             logging.info(message)
+            
+        
+
+class LoggingMixin:
+    """
+    Parameters
+    ----------
+    disable_logs : bool
+        If True, disables logging.
+    level : int | str
+        Logging level (e.g. logging.DEBUG or "debug").
+        Defaults to logging.INFO.
+    """
+    def __init__(self, disable_logs: bool = False, level: "str | int" = logging.INFO):
+        self.disable_logs = disable_logs
+        if isinstance(level, str):
+            level = getattr(logging, level.upper(), logging.INFO)
+        self.level = level
+
+    def _log(self, message: str, level: "str | int" = None) -> None:
+        if self.disable_logs:
+            return
+
+        # Use per-call level if provided; otherwise fallback to instance level
+        effective_level = self.level
+        if level is not None:
+            if isinstance(level, str):
+                level = getattr(logging, level.upper(), logging.INFO)
+            effective_level = level
+
+        logging.log(effective_level, message)
             
             
 def get_filtered_X(X_train, lags, spatial_adj):
