@@ -9,13 +9,261 @@ from keras.models import load_model
 import matplotlib.patheffects as PathEffects
 #from .data_processing import TrafficFlowDataProcessing
 from ..utils.helper_utils import normalize_data
-from ..post_processing.post_processing import PredictionCorrection
+from ..post_processing.post_processing import PredictionCorrectionPipeline,PredictionCorrectionPerSensor
 import seaborn as sns
 sns.set_style('darkgrid')
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 from time import time
+import pandas as pd
+from typing import Optional, Dict, Union
 
+
+
+class ModelEvaluatorCorrection:
+    """
+    A class to evaluate saved regression models (XGBoost/.pkl or Keras/.h5) using common metrics,
+    including SMAPE, MAE, RMSE, and MAPE. Handles normalization and speed reconstruction.
+    """
+
+    def __init__(self, X_test, df_for_ML, y_train=None, y_test=None, rounding=2,
+                 discard_zero_mape=False, target_is_gman_error_prediction=True,
+                 y_is_normalized=False, epsilon=1e-2):
+        self.X_test = X_test
+        self.df_for_ML = df_for_ML[df_for_ML['test_set']]
+        self.y_train = y_train
+        self.rounding = int(rounding)
+        self.discard_zero_mape = discard_zero_mape
+        self.target_is_gman_error_prediction = target_is_gman_error_prediction
+        self.y_is_normalized = y_is_normalized
+        self.epsilon = epsilon
+
+        if self.y_is_normalized:
+            if y_train is None:
+                raise ValueError("y_train must be provided for de-normalization.")
+            self.y_mean = np.mean(y_train)
+            self.y_std = np.std(y_train)
+
+        self.y_test = y_test
+        self.y_test_before_reconstruction = y_test.copy()
+        self.y_test = self.reconstruct_y(self.y_test)
+
+        zero_percentage = self.calculate_discarded_percentage()
+        self.calculate_mape_with_handling_zero_values = zero_percentage > 0
+
+    def calculate_discarded_percentage(self):
+        zero_mask = self.y_test == 0
+        return (np.sum(zero_mask) / len(self.y_test)) * 100
+
+    def load_model_from_path(self, model_path):
+        if model_path.endswith('.h5'):
+            return load_model(model_path)
+        elif model_path.endswith('.pkl'):
+            with open(model_path, 'rb') as f:
+                return pickle.load(f)
+        raise ValueError(f"Unsupported model file: {model_path}")
+
+    def reconstruct_y(self, y):
+        if self.target_is_gman_error_prediction:
+            return y + self.df_for_ML['gman_prediction_orig']
+        return y + self.X_test['value']
+
+    def smape(self, y_true, y_pred):
+        denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
+        smape_vals = np.abs(y_pred - y_true) / np.where(denominator == 0, 1, denominator)
+        return np.mean(smape_vals) * 100, np.std(smape_vals) * 100
+
+    def calculate_metrics(self, y_pred, prefix=''):
+        errors = self.y_test - y_pred
+        abs_errors = np.abs(errors)
+
+        mae = mean_absolute_error(self.y_test, y_pred)
+        median_ae = median_absolute_error(self.y_test, y_pred)
+        rmse = mean_squared_error(self.y_test, y_pred, squared=False)
+
+        if not self.calculate_mape_with_handling_zero_values:
+            mape = mean_absolute_percentage_error(self.y_test, y_pred)
+        else:
+            mape, _, _, _ = self.calculate_mape_in_case_of_zero_values(y_pred)
+
+        mae_std = np.std(abs_errors)
+        rmse_std = np.std(errors ** 2)
+        mape_std = np.std(abs_errors / np.abs(self.y_test))
+
+        naive_error = np.abs(self.y_test_before_reconstruction)
+        naive_mae = np.mean(naive_error)
+        naive_median_ae = np.median(naive_error)
+        naive_rmse = np.sqrt(np.mean(naive_error ** 2))
+
+        if not self.calculate_mape_with_handling_zero_values:
+            naive_mape = np.mean(naive_error / np.abs(self.y_test))
+        else:
+            _, _, naive_mape, _ = self.calculate_mape_in_case_of_zero_values(y_pred)
+
+        metrics = {
+            f'{prefix}_MAE': round(mae, self.rounding),
+            f'{prefix}_Median_AE': round(median_ae, self.rounding),
+            f'{prefix}_RMSE': round(rmse, self.rounding),
+            f'{prefix}_MAPE': round(mape * 100, self.rounding),
+        }
+
+        naive_metrics = {
+            f'{prefix}_Naive_MAE': round(naive_mae, self.rounding),
+            f'{prefix}_Naive_Median_AE': round(naive_median_ae, self.rounding),
+            f'{prefix}_Naive_RMSE': round(naive_rmse, self.rounding),
+            f'{prefix}_Naive_MAPE': round(naive_mape * 100, self.rounding),
+        }
+
+        metrics_std = {
+            f'{prefix}_MAE_std': round(mae_std, self.rounding),
+            f'{prefix}_Median_AE_std': round(mae_std, self.rounding),
+            f'{prefix}_RMSE_std': round(rmse_std, self.rounding),
+            f'{prefix}_MAPE_std': round(mape_std * 100, self.rounding),
+        }
+
+        naive_metrics_std = {
+            f'{prefix}_Naive_MAE_std': round(np.std(naive_error), self.rounding),
+            f'{prefix}_Naive_Median_AE_std': round(np.std(naive_error), self.rounding),
+            f'{prefix}_Naive_RMSE_std': round(np.std(naive_error ** 2), self.rounding),
+            f'{prefix}_Naive_MAPE_std': round(np.std(naive_error / np.abs(self.y_test)) * 100, self.rounding),
+        }
+
+        return {
+            "metrics": metrics,
+            "metrics_std": metrics_std,
+            "naive_metrics": naive_metrics,
+            "naive_metrics_std": naive_metrics_std
+        }
+
+    def evaluate_model_from_path(self, model_path, print_results=True):
+        model = self.load_model_from_path(model_path)
+        time_start = time()
+        if 'neural' in model_path.lower():
+            _, X_test_normalized = normalize_data(X_test=self.X_test)
+            y_pred = model.predict(X_test_normalized).flatten()
+        else:
+            y_pred = model.predict(self.X_test)
+
+        if self.y_is_normalized:
+            y_pred = y_pred * self.y_std + self.y_mean
+
+        self.y_pred_before_reconstruction = y_pred.copy()
+        y_pred = self.reconstruct_y(y_pred)
+        time_end = time()
+        self.y_pred = y_pred
+        self.inference_time = time_end - time_start
+        self.inference_time_per_sample = self.inference_time / len(self.X_test)
+
+        metrics = self.calculate_metrics(y_pred, prefix="")
+
+        if print_results:
+            self.print_evaluation_results(**metrics)
+
+        return metrics
+
+    def evaluate_model_from_path_with_correction(
+        self,
+        model_path: str,
+        apply_correction: bool = True,
+        correction_method: str = 'naive_based_correction',
+        correction_kwargs: Optional[Dict[str, Union[float, int]]] = None,
+        print_results: bool = True,
+        return_preds: bool = False
+            ):
+        correction_kwargs = correction_kwargs or {}
+
+        model = self.load_model_from_path(model_path)
+        time_start = time()
+
+        if 'neural' in model_path.lower():
+            _, X_test_normalized = normalize_data(X_test=self.X_test)
+            y_pred = model.predict(X_test_normalized).flatten()
+        else:
+            y_pred = model.predict(self.X_test)
+
+        if self.y_is_normalized:
+            y_pred = y_pred * self.y_std + self.y_mean
+
+        self.y_pred_before_reconstruction = y_pred.copy()
+        y_pred = self.reconstruct_y(y_pred)
+        time_end = time()
+
+        self.y_pred = y_pred
+        self.inference_time = time_end - time_start
+        self.inference_time_per_sample = self.inference_time / len(self.X_test)
+
+        original_metrics = self.calculate_metrics(y_pred, prefix="Original")
+
+        corrected_metrics = None
+        y_pred_corrected = None
+        if apply_correction:
+            pipeline = PredictionCorrectionPipeline(
+                correction_class=PredictionCorrectionPerSensor,
+                method=correction_method,
+                parallel=True,
+                n_jobs=-1
+            )
+
+            y_pred_corrected = pipeline.apply(
+                X_test=self.X_test,
+                y_test=self.y_test,
+                y_pred=pd.Series(y_pred, index=self.X_test.index),
+                df_for_ML=self.df_for_ML,
+                **correction_kwargs
+            )
+            
+            y_pred_corrected = pd.Series(y_pred_corrected, index=self.X_test.index)
+            corrected_metrics = self.calculate_metrics(y_pred_corrected, prefix="Corrected")
+
+        if print_results:
+            print("\n=== Original (No Correction Applied) ===")
+            self.print_evaluation_results(**original_metrics)
+            if corrected_metrics:
+                print("\n=== Corrected Predictions ===")
+                self.print_evaluation_results(**corrected_metrics)
+
+        results = {
+            'original': original_metrics,
+            'corrected': corrected_metrics
+        }
+
+        if return_preds:
+            return results, y_pred, y_pred_corrected
+
+        return results
+
+    def print_evaluation_results(self, metrics, metrics_std, naive_metrics, naive_metrics_std):
+        print("\n--- Evaluation Results ---")
+        print("\nNaive Metrics:")
+        print(naive_metrics)
+        print("\nNaive Metrics Standard Deviations:")
+        print(naive_metrics_std)
+        print("\nMetrics:")
+        print(metrics)
+        print("\nMetrics Standard Deviations:")
+        print(metrics_std)
+        print("--------------------------\n")
+
+    def calculate_mape_in_case_of_zero_values(self, y_pred):
+        if self.discard_zero_mape:
+            mask = self.y_test != 0
+            y_test = self.y_test[mask]
+            y_pred = y_pred[mask]
+            y_test_base = self.y_test_before_reconstruction[mask]
+            x_val = self.X_test[mask]['value']
+        else:
+            y_test = np.where(self.y_test == 0, self.epsilon, self.y_test)
+            y_pred = y_pred
+            y_test_base = np.where(self.y_test_before_reconstruction == 0, self.epsilon, self.y_test_before_reconstruction)
+            x_val = self.X_test['value']
+
+        ape = np.abs(y_test - y_pred) / np.abs(y_test)
+        naive_ape = np.abs(y_test_base / (y_test_base + x_val))
+
+        return np.mean(ape), np.std(ape), np.mean(naive_ape), np.std(naive_ape)
+    
+    
+    
 class ModelEvaluator:
     """
     A class to evaluate saved regression models (XGBoost/.pkl or Keras/.h5) using common metrics,
@@ -205,6 +453,77 @@ class ModelEvaluator:
         naive_ape = np.abs(y_test_base / (y_test_base + x_val))
 
         return np.mean(ape), np.std(ape), np.mean(naive_ape), np.std(naive_ape)
+    
+    
+    def evaluate_model_from_path_with_correction(
+        self,
+        model_path: str,
+        apply_correction: bool = True,
+        correction_method: str = 'naive_based_correction',
+        correction_kwargs: Optional[Dict[str, Union[float, int]]] = None,
+        print_results: bool = True,
+        return_preds: bool = False
+    ):
+        correction_kwargs = correction_kwargs or {}
+
+        model = self.load_model_from_path(model_path)
+        time_start = time()
+
+        if 'neural' in model_path.lower():
+            _, X_test_normalized = normalize_data(X_test=self.X_test)
+            y_pred = model.predict(X_test_normalized).flatten()
+        else:
+            y_pred = model.predict(self.X_test)
+
+        if self.y_is_normalized:
+            y_pred = y_pred * self.y_std + self.y_mean
+
+        self.y_pred_before_reconstruction = y_pred.copy()
+        y_pred = self.reconstruct_y(y_pred)
+        time_end = time()
+
+        self.y_pred = y_pred
+        self.inference_time = time_end - time_start
+        self.inference_time_per_sample = self.inference_time / len(self.X_test)
+
+        original_metrics = self.calculate_metrics(y_pred, prefix="Original")
+
+        corrected_metrics = None
+        y_pred_corrected = None
+        if apply_correction:
+            pipeline = PredictionCorrectionPipeline(
+                correction_class=PredictionCorrectionPerSensor,
+                method=correction_method,
+                parallel=True,
+                n_jobs=-1
+            )
+
+            y_pred_corrected = pipeline.apply(
+                X_test=self.X_test,
+                y_test=self.y_test,
+                y_pred=pd.Series(y_pred, index=self.X_test.index),
+                df_for_ML=self.df_for_ML,
+                **correction_kwargs
+            )
+
+            corrected_metrics = self.calculate_metrics(y_pred_corrected, prefix="Corrected")
+
+        if print_results:
+            print("\n=== Original (No Correction Applied) ===")
+            self.print_evaluation_results(**original_metrics)
+            if corrected_metrics:
+                print("\n=== Corrected Predictions ===")
+                self.print_evaluation_results(**corrected_metrics)
+
+        results = {
+            'original': original_metrics,
+            'corrected': corrected_metrics
+        }
+
+        if return_preds:
+            return results, y_pred, y_pred_corrected
+
+        return results
 
 
 class ModelEvaluator_deprecated_v2:
