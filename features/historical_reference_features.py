@@ -1,39 +1,99 @@
 # features/historical_reference_window_features.py
 import pandas as pd
 from datetime import timedelta
-from typing import List, Sequence, Tuple
-from .base import FeatureTransformer          # unchanged
+from typing import List, Sequence, Tuple, Set, Optional
+from .base import FeatureTransformer , BaseAggregator          # unchanged
 
-# ──────────────────────────────────────────────────────────────────────
-_VALID_AGGS: set[str] = {"mean", "min", "max", "std", "median"}
 
+
+from abc import ABC, abstractmethod
+from typing import Iterable
+import pandas as pd
+import numpy as np
+
+# ------------------------------------------------------------------
+class ClimatologyAggregator(BaseAggregator):
+    """
+    Aggregate **all historical weeks** for *the same minute-of-day*.
+
+    NaN handling
+    ------------
+    * A `pandas.Series` is built from `values` (dtype=float), so any missing
+      entries are already converted to `np.nan`.
+    * We then call the chosen aggregation function with **`skipna=True`**.
+      This is the most memory-efficient way to ignore NaNs, because:
+
+        • no extra copy is created (unlike an explicit `.dropna()`),  
+        • every pandas reduction (`mean`, `median`, `min`, `max`, `std`) accepts
+          the `skipna` flag and is internally vectorised.
+
+    * If **every** value is NaN, the reduction returns `np.nan`, signalling
+      “insufficient long-term data”.
+    """
+
+    def __init__(self, agg_fn: str = "mean") -> None:
+        self.agg_fn = agg_fn  # 'mean', 'median', 'max', 'min', 'std', …
+
+    def aggregate(self, values: Iterable[float]) -> float:
+        s = pd.Series(values, dtype=float)
+        return getattr(s, self.agg_fn)(skipna=True)
+
+
+# ------------------------------------------------------------------
+class LocalWindowAggregator(BaseAggregator):
+    """
+    Aggregate **only the raw window** that was fetched for the current row.
+
+    NaN handling
+    ------------
+    * We **explicitly drop NaNs** with `.dropna()` before computing the
+      statistic.  Two reasons:
+
+        1. When the window is small (e.g. 11 samples) every finite datum
+           counts—dropping NaNs first prevents them from diluting `std`
+           or producing misleading `min/max` behaviour.
+
+        2. Some pandas reductions (e.g. `.median()`) ignore NaNs by default,
+           but `.min()` / `.max()` do **not** unless `skipna=True`.  By
+           dropping we ensure uniform behaviour across all aggregation
+           functions with no extra keyword juggling.
+
+    * If the window contains **no finite values after dropping**, we return
+      `np.nan` so downstream code can decide how to handle “fully missing”.
+    """
+
+    def __init__(self, agg_fn: str = "mean") -> None:
+        self.agg_fn = agg_fn
+
+    def aggregate(self, values: Iterable[float]) -> float:
+        s = pd.Series(values, dtype=float).dropna()
+        if s.empty:
+            return np.nan
+        else:
+            return getattr(s, self.agg_fn)()  # e.g. s.mean(), s.std(), …
+       
+_VALID_AGGS: Set[str]  = {"mean", "min", "max", "std", "median"}
+_VALID_MODES: Set[str] = {"climatology", "local"}
+
+# ------------------------------------------------------------------
 class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
     """
-    Add raw & aggregated historical-reference features one weekday back.
+    Add raw & aggregated *previous-weekday* reference features.
 
-    Row-to-lookup rules
-    ───────────────────
-    Tue-Fri → previous calendar day  
-    Mon     → previous Friday (-3 d)  
-    Sat     → previous Saturday (-7 d)  
-    Sun     → previous Sunday  (-7 d),  
-              fallback to Saturday (-1 d) *only* if that Sunday slot absent.
+    Two aggregation modes
+    ---------------------
+    - **climatology** (default) – statistic over *all* past weeks
+      for the same minute-of-day.
+    - **local** – statistic over the *instant* look-back window
+      just retrieved for the row.
 
-    If the final lookup timestamp does not exist in the data, NaNs are kept.
-
-    Parameters
-    ----------
-    datetime_col, sensor_col, value_col : str
-    horizon_min  : int
-    window_before_min, window_after_min : int   inclusive
-    step_min     : int   sampling inside the window
-    aggs         : sequence[str]  subset of {"mean","min","max","std","median"}
-    disable_logs : bool
+    NaNs are ignored in every statistic.
     """
 
-    # ──────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────
     def __init__(
         self,
+        *,
         datetime_col: str = "date",
         sensor_col:   str = "sensor_uid",
         value_col:    str = "value",
@@ -41,244 +101,163 @@ class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
         window_before_min: int = 5,
         window_after_min:  int = 5,
         step_min:          int = 1,
-        aggs: Sequence[str] | None = None,
+        aggs: Optional[Sequence[str]] = None,
+        agg_mode: str = "local", # "climatology" or "local"
+        agg_fn: str = "mean",                 # for LocalWindowAggregator
         disable_logs: bool = False,
     ):
         super().__init__(disable_logs=disable_logs)
 
-        # basic config
-        self.dt  = datetime_col
-        self.sid = sensor_col
-        self.val = value_col
+        # column aliases
+        self.dt, self.sid, self.val = datetime_col, sensor_col, value_col
 
+        # timing config
         self.horizon     = timedelta(minutes=horizon_min)
         self.win_before  = timedelta(minutes=window_before_min)
         self.win_after   = timedelta(minutes=window_after_min)
         self.step        = timedelta(minutes=step_min)
 
+        # aggregation config & validation --------------------------
         self.aggs = list(aggs or [])
-        bad = set(self.aggs) - _VALID_AGGS
-        if bad:
-            raise ValueError(
-                f"{self.__class__.__name__}: unsupported aggs {bad}. "
-                f"Allowed: {sorted(_VALID_AGGS)}"
-            )
+        unknown = set(self.aggs) - _VALID_AGGS
+        if unknown:
+            raise ValueError(f"Unsupported aggs {unknown}. Allowed: {_VALID_AGGS}")
+
+        if agg_mode not in _VALID_MODES:
+            raise ValueError(f"agg_mode must be one of {_VALID_MODES}")
+        self.agg_mode = agg_mode
+
+        # strategy instance
+        if self.agg_mode == "local":
+            self.aggregator = LocalWindowAggregator(agg_fn)
+        else:
+            # agg_fn irrelevant – each statistic in self.aggs is applied
+            self.aggregator = ClimatologyAggregator()
 
         self._log(
-            f"[{self.__class__.__name__}] horizon={horizon_min}′  "
-            f"window=[-{window_before_min},+{window_after_min}]′  "
-            f"step={step_min}′  aggs={self.aggs or '-'}",
+            f"horizon={horizon_min}′  window=[-{window_before_min},+{window_after_min}]′ "
+            f"step={step_min}′  aggs={self.aggs or '-'}  mode={self.agg_mode}",
             level="debug",
         )
 
-    # ──────────────────────────────────────────────────────────────────
-    def transform(self, df_in: pd.DataFrame):
-        self._log(f"transform(): incoming shape {df_in.shape}", level="debug")
-        df = df_in.copy()
-        df[self.dt] = pd.to_datetime(df[self.dt])
+    # ───────────────────────────────────────────────────────────
+    def _lookup_shift(self, ts: pd.Timestamp) -> timedelta:
+        """Return how many days to subtract to reach 'previous weekday'."""
+        wd = ts.weekday()
+        if wd in (1, 2, 3, 4):  # Tue-Fri
+            return timedelta(days=1)
+        if wd == 0:             # Monday
+            return timedelta(days=3)
+        return timedelta(days=7)  # Sat/Sun
 
-        # fast LUT  (time, sensor) → value
+    # ───────────────────────────────────────────────────────────
+    def transform(self, df_in: pd.DataFrame):
+        """
+        Parameters
+        ----------
+        df_in : pd.DataFrame
+            Must contain columns  [datetime_col, sensor_col, value_col]
+
+        Returns
+        -------
+        df_out : pd.DataFrame
+            Original dataframe plus raw-window and aggregate columns.
+        new_raw_cols : list[str]
+            Names of the raw window columns added.
+        """
+        # ── 0.  Defensive copy & datetime cast  --------------------
+        df = df_in.copy()
+        df[self.dt] = pd.to_datetime(df[self.dt])    # ensures timezone-aware ops
+
+        # Fast lookup-table:  (timestamp, sensor_uid) ➜ value
         lut = df.set_index([self.dt, self.sid])[self.val]
 
-        # ── 1. primary lookup_time vector  -----------------------------
+        # ── 1.  Build lookup_time for “last same weekday” ----------
+        # Start with ‘prediction time + horizon’ (i.e. when we want to know speed)
+        df["lookup_time"] = df[self.dt] + self.horizon
+
+        # Subtract days so that lookup_time represents the **previous occurrence**
+        # of the same weekday, following the domain rules:
+        #   • Tue–Fri  : previous calendar day  (−1)
+        #   • Monday   : previous Friday        (−3)
+        #   • Sat/Sun  : same weekday last week (−7)
         dow = df[self.dt].dt.weekday
+        df.loc[dow.isin([1, 2, 3, 4]), "lookup_time"] -= timedelta(days=1)
+        df.loc[dow == 0,               "lookup_time"] -= timedelta(days=3)
+        df.loc[dow.isin([5, 6]),       "lookup_time"] -= timedelta(days=7)
 
-        df["lookup_time"] = df[self.dt] + self.horizon                # look ahead
-        df.loc[dow.isin([1, 2, 3, 4]), "lookup_time"] -= timedelta(days=1)  # Tue-Fri
-        df.loc[dow == 0,                    "lookup_time"] -= timedelta(days=3)  # Mon
-        df.loc[dow.isin([5, 6]),            "lookup_time"] -= timedelta(days=7)  # Sat/Sun
-
-        # ── 2. Sunday → Saturday fallback  ----------------------------
-        sunday_mask = dow == 6
-        if sunday_mask.any():
-            # index positions of the Sunday rows
-            sun_idx = df.index[sunday_mask]
-
-            # does the Sunday-minus-7 slot exist?
-            lookup_idx = list(
-                zip(df.loc[sun_idx, "lookup_time"], df.loc[sun_idx, self.sid])
-            )
-            missing = lut.reindex(lookup_idx).isna().to_numpy()  # boolean numpy array
-
-            if missing.any():                                    # only if something missing
+        # Sunday special case: if that Sunday slot is empty (all NaN),
+        # fall back to previous Saturday.
+        sun_idx = df.index[dow == 6]
+        if len(sun_idx):
+            # vector of (timestamp, sensor) pairs to probe in LUT
+            pairs   = list(zip(df.loc[sun_idx, "lookup_time"],
+                               df.loc[sun_idx, self.sid]))
+            missing = lut.reindex(pairs).isna().to_numpy()
+            if missing.any():
                 df.loc[sun_idx[missing], "lookup_time"] = (
                     df.loc[sun_idx[missing], self.dt] + self.horizon - timedelta(days=1)
                 )
 
-        self._log("lookup_time vector ready", level="debug")
-
-        # ── 3. RAW sample columns  ------------------------------------
-        new_cols: List[str] = []
+        # ── 2.  Raw window samples around lookup_time  -------------
+        raw_cols: List[str] = []
         offset = -self.win_before
         while offset <= self.win_after:
-            col = f"prev_wd_val_t{int(offset.total_seconds()/60):+d}".replace("+", "")
-            new_cols.append(col)
+            minutes = int(offset.total_seconds() / 60)
+            col     = f"prev_wd_val_t{minutes:+}".replace("+", "")
+            raw_cols.append(col)
+
+            # Fetch value for (lookup_time + offset, sensor_uid)
             df[col] = lut.reindex(
                 list(zip(df["lookup_time"] + offset, df[self.sid]))
             ).values
             offset += self.step
-        self._log(f"raw features added ({len(new_cols)})", level="debug")
 
-        # ── 4. Aggregates  -------------------------------------------
+        # ── 3.  Aggregate features  -------------------------------
         if self.aggs:
-            # group by minute-of-day
-            df["__mod__"] = df["lookup_time"].dt.strftime("%H:%M")
-            needed_times   = df["lookup_time"].unique()
-            needed_sensors = df[self.sid].unique()
+            if self.agg_mode == "climatology":
+                # --- long-term minute-of-day statistic -------------
+                df["__hhmm__"] = df["lookup_time"].dt.strftime("%H:%M")
 
-            mask = lut.index.get_level_values(0).isin(needed_times) & \
-                   lut.index.get_level_values(1).isin(needed_sensors)
-            windowed = lut.loc[mask].unstack(self.sid)
-            grouped  = windowed.groupby(windowed.index.strftime("%H:%M"))
+                # limit LUT to relevant minutes & sensors for speed
+                hhmm_needed   = df["__hhmm__"].unique()
+                sensors_used  = df[self.sid].unique()
+                mask = (lut.index.get_level_values(0).strftime("%H:%M").isin(hhmm_needed) &
+                        lut.index.get_level_values(1).isin(sensors_used))
 
-            for agg in self.aggs:
-                col = f"prev_wd_{agg}_{int(self.win_before.total_seconds()/60)}_" \
-                      f"{int(self.win_after.total_seconds()/60)}"
-                new_cols.append(col)
-                df[col] = grouped.transform(agg).stack().reindex(
-                    list(zip(df["lookup_time"], df[self.sid]))
-                ).values
+                wide   = lut.loc[mask].unstack(self.sid)                  # 2-D frame
+                grouped = wide.groupby(wide.index.strftime("%H:%M"))      # group by HH:MM
 
-            df.drop(columns="__mod__", inplace=True)
-            self._log(f"aggregate features added {self.aggs}", level="debug")
+                for agg in self.aggs:
+                    colname = f"prev_wd_{agg}_{self.win_before.seconds//60}_" \
+                              f"{self.win_after.seconds//60}"
+                    # Fill via (HH:MM, sensor_uid) lookup
+                    df[colname] = grouped.transform(agg, skipna=True).stack().reindex(
+                        list(zip(df["lookup_time"], df[self.sid]))
+                    ).values
 
-        # ── 5. cleanup / return  --------------------------------------
-        df.drop(columns="lookup_time", inplace=True)
-        self._log(f"transform(): finished shape {df.shape}", level="debug")
-        return df, new_cols
+                df.drop(columns="__hhmm__", inplace=True)
 
-# class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
-#     """
-#     Adds one or more features that look `horizon_min` into the future on the
-#     previous weekday (–1d, skipping weekends).  Inside a user-defined window
-#     around that lookup-time it can either return raw samples or aggregates.
+            else:  # agg_mode == "local"
+                # --- short-window statistic computed row-by-row ----
+                def _row_aggs(r):
+                    vals = r[raw_cols]                           # window vector
+                    return {
+                        f"{agg}_local": self.aggregator.aggregate(vals)
+                        for agg in self.aggs
+                    }
 
-#     ─────────────────────────────────────────────────────────────────────
-#     Parameters
-#     ----------
-#     datetime_col : str
-#     sensor_col   : str
-#     value_col    : str
-#     horizon_min  : int          how far *ahead* you predict
-#     window_before_min : int     minutes *before* the lookup-time (inclusive)
-#     window_after_min  : int     minutes *after*  the lookup-time (inclusive)
-#     step_min          : int     granularity inside the window
-#     aggs : List[str]            any of {"mean","min","max","std","median"}-VALID_AGGS
-#     disable_logs (bool): If True, suppress logging
-#     strict_weekday_match : bool if False, still fills weekends             """
+                df = pd.concat([df,
+                                df.apply(_row_aggs, axis=1, result_type="expand")],
+                               axis=1)
 
-#     def __init__(self,
-#                  datetime_col: str = "date",
-#                  sensor_col:   str = "sensor_uid",
-#                  value_col:    str = "value",
-#                  horizon_min:  int = 15,
-#                  window_before_min: int = 0,
-#                  window_after_min:  int = 0,
-#                  step_min:          int = 1,
-#                  aggs: List[str] = None,
-#                  strict_weekday_match: bool = True,
-#                 disable_logs: bool = False):
-
-#         super().__init__(disable_logs)
-#         self.datetime_col = datetime_col
-#         self.sensor_col   = sensor_col
-#         self.value_col    = value_col
-
-#         self.horizon       = timedelta(minutes=horizon_min)
-#         self.window_before = timedelta(minutes=window_before_min)
-#         self.window_after  = timedelta(minutes=window_after_min)
-#         self.step          = timedelta(minutes=step_min)
-#         self.aggs          = aggs or []
-#         self.strict_match  = strict_weekday_match
-#         unknown = set(self.aggs) - VALID_AGGS
-#         if unknown:
-#             raise ValueError(
-#                 f"{self.__class__.__name__}: unsupported agg(s) {unknown}. "
-#                 f"Allowed: {sorted(VALID_AGGS)}"
-#         )
+        # ── 4.  Cleanup & return  ---------------------------------
+        df.drop(columns="lookup_time", inplace=True, errors="ignore")
+        return df, raw_cols
 
 
-#         self._log(
-#             f"[{self.__class__.__name__}] "
-#             f"horizon={horizon_min}′, "
-#             f"window=[-{window_before_min}, +{window_after_min}]′, "
-#             f"step={step_min}′, aggs={self.aggs}, "
-#             f"strict_weekday_match={strict_weekday_match}",
-#             level="debug"
-#         )
-
-#     def transform(self, df):
-#         self._log(f"transform() called - incoming shape={df.shape}", level="debug")
-#         df = df.copy()
-#         df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
-
-#         # ---------- build lookup table ----------------------------------
-#         pivot   = df.pivot(index=self.datetime_col,
-#                            columns=self.sensor_col,
-#                            values=self.value_col)
-#         stacked = pivot.stack()          # MultiIndex [time, sensor] → value
-
-#         self._log("pivot/stack completed", level="debug")
-
-#         # ---------- compute lookup times --------------------------------
-#         one_day   = pd.Timedelta(days=1)
-#         df["lookup_time"] = df[self.datetime_col] + self.horizon
-
-#         # step back one weekday (skip weekend)
-#         weekday  = df[self.datetime_col].dt.weekday
-#         df["lookup_time"] -= one_day                         # always −1d
-#         df.loc[(weekday == 0), "lookup_time"] -= one_day     # Monday → Friday
-
-#         if self.strict_match:
-#             wk_ok = (weekday < 5) & (df["lookup_time"].dt.weekday < 5)
-#             df.loc[~wk_ok, "lookup_time"] = pd.NaT
-
-#         self._log("lookup_time column calculated", level="debug")
-
-#         # ---------- generate windowed raw samples -----------------------
-#         new_cols = []
-#         start_off = -self.window_before
-#         end_off   =  self.window_after
-
-#         offset = start_off
-#         while offset <= end_off:
-#             col = f"prev_wd_val_t{int(offset.total_seconds()/60)}"
-#             new_cols.append(col)
-#             df[col] = stacked.reindex(
-#                 list(zip(df["lookup_time"] + offset, df[self.sensor_col]))
-#             ).values
-#             offset += self.step
-
-#         self._log(f"raw-window features added: {len(new_cols)} cols", level="debug")
-
-#         # ---------- aggregated statistics (optional) --------------------
-#         if self.aggs:
-#             lo = df["lookup_time"] - self.window_before
-#             hi = df["lookup_time"] + self.window_after
-#             window_mask = (
-#                 (stacked.index.get_level_values(0) >= lo.min()) &
-#                 (stacked.index.get_level_values(0) <= hi.max())
-#             )
-#             windowed = stacked.loc[window_mask].unstack(self.sensor_col)
-
-#             for agg in self.aggs:
-#                 col = f"prev_wd_{agg}_{int(self.window_before.total_seconds()/60)}_" \
-#                       f"{int(self.window_after.total_seconds()/60)}"
-#                 new_cols.append(col)
-#                 df[col] = windowed.groupby(
-#                     windowed.index.strftime("%H:%M")
-#                 ).transform(agg).stack().reindex(
-#                     list(zip(df["lookup_time"], df[self.sensor_col]))
-#                 ).values
-
-#             self._log(f"aggregate features added: {set(self.aggs)}", level="debug")
-
-#         # ---------- tidy up & return ------------------------------------
-#         df.drop(columns=["lookup_time"], inplace=True)
-#         self._log(f"transform() finished - new shape={df.shape}", level="debug")
-#         return df, new_cols
     
-    
+# ------------------------------------------------------------------   
     
 class PreviousWeekdayValueFeatureEngineer(FeatureTransformer):
     """
