@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import pandas as pd
+from     typing import Iterable
 from ..utils.helper_utils import LoggingMixin 
 
 class SensorEncodingStrategy(ABC, LoggingMixin):
@@ -49,6 +50,14 @@ class FeatureTransformer(ABC, LoggingMixin):
             pd.DataFrame: Transformed DataFrame.
         """
         pass
+    
+
+class BaseAggregator(ABC):
+    """Strategy interface for any aggregation flavour."""
+
+    @abstractmethod
+    def aggregate(self, values: Iterable[float]) -> float:
+        """Return a single statistic from `values` (NaNs ignored)."""
     
     
     
