@@ -8,6 +8,24 @@ from ..data_loading.data_loader_orchestrator import InitialTrafficDataLoader
 from ..constants.constants import colnames, WEATHER_COLUMNS
 import logging
 from ..utils.helper_utils import *
+from ..features.sensor_encoder import (
+    MeanSensorEncoder,
+    OrdinalSensorEncoder,
+    OneHotSensorEncoder,
+)
+from ..features.calendar_features import DateTimeFeatureEngineer
+from ..features.temporal_features import TemporalLagFeatureAdder
+from ..features.congestion_features import CongestionFeatureEngineer
+from ..features.historical_reference_features import (
+    PreviousWeekdayWindowFeatureEngineer,
+)
+from ..features.adjacent_features import AdjacentSensorFeatureAdder
+from ..features.target_variable_feature import TargetVariableCreator
+from ..features.misc_features import WeatherFeatureDropper
+from ..features.gman_features import GMANPredictionAdder
+from ..data_loading.data_loader_orchestrator import InitialTrafficDataLoader
+from ..constants.constants import WEATHER_COLUMNS
+from ..utils.helper_utils import LoggingMixin
 
 # Configure logging
 logging.basicConfig(
@@ -16,84 +34,169 @@ logging.basicConfig(
 )
 
 
-class TrafficDataPipelineOrchestrator(LoggingMixin):
+class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
+    """
+    End‑to‑end feature‑engineering pipeline for traffic‑sensor data.
+
+    The orchestrator wraps together:
+    1. Loading & basic cleansing   – via :class:`InitialTrafficDataLoader`
+    2. Categorical encoding        – ordinal / mean‑target / one‑hot
+    3. DateTime features           – hour‑of‑day, weekday, etc.
+    4. Spatial adjacency features  – upstream / downstream sensors
+    5. Temporal lag windows        – autoregressive lags of `value`
+    6. Congestion / outlier flags  – quantile & time‑of‑day rules
+    7. Historical reference feats  – previous‑weekday windows
+    8. Target variable creation    – n‑step horizon forecast
+    9. Optional GMAN predictions   – merged from external model
+
+    Parameters
+    ----------
+    file_path
+        Parquet file containing raw sensor records.
+    sensor_col, datetime_col, value_col
+        Column names in the raw data.
+    new_sensor_col
+        Column that will hold encoded sensor IDs.
+    weather_cols
+        Optional list of weather columns to eventually drop.
+    df_gman
+        Optional GMAN prediction dataframe.
+    sensor_encoding_type
+        One of ``'ordinal'``, ``'mean'`` or ``'onehot'``.
+
+    Notes
+    -----
+    *New functionality*: the pipeline now accepts **`test_start_time`**.
+    If both `test_size` *and* `test_start_time` are supplied, a warning is
+    issued and the date‑based split takes precedence.
+    """
+    # ------------------------------------------------------------------#
+    # Construction
+    # ------------------------------------------------------------------#
     def __init__(
         self,
-        file_path,
-        sensor_col='sensor_id',
-        datetime_col='date',
-        value_col='value',
-        new_sensor_id_col='sensor_uid',
-        weather_cols=WEATHER_COLUMNS,
-        disable_logs=False,
-        df_gman=None
-    ):
+        file_path: str,
+        *,
+        sensor_col: str = "sensor_id",
+        datetime_col: str = "date",
+        value_col: str = "value",
+        new_sensor_col: str = "sensor_uid",
+        weather_cols: Optional[list] = WEATHER_COLUMNS,
+        disable_logs: bool = False,
+        df_gman: Optional[pd.DataFrame] = None,
+        sensor_encoding_type: str = "ordinal",
+    ) -> None:
         super().__init__(disable_logs=disable_logs)
+
+        # Immutable parameters --------------------------------------------
         self.file_path = file_path
         self.sensor_dict_path = os.path.dirname(file_path)
         self.sensor_col = sensor_col
+        self.new_sensor_col = new_sensor_col
         self.datetime_col = datetime_col
         self.value_col = value_col
-        self.new_sensor_id_col = new_sensor_id_col
-        self.weather_cols = weather_cols
-        self.df = None
-        self.df_orig = None
+        self.weather_cols = weather_cols or []
         self.df_gman = df_gman
-        self.first_test_timestamp = None
-        self.feature_log = {}  # Track added features
-        self.smoothing = None
-        self.smoothing_prev = None
-        self.upstream_sensor_dict = None
-        self.downstream_sensor_dict = None
+        self.sensor_encoding_type = sensor_encoding_type
 
-    def run_pipeline(
-        self,
-        test_size=1/3,
-        filter_extreme_changes=True,
-        smooth_speeds=True,
-        relative_threshold=0.7,
-        diagnose_extreme_changes=False,
-        add_gman_predictions=False,
-        use_gman_target=False,
-        convert_gman_prediction_to_delta_speed=True,
-        window_size=3,
-        spatial_adj=1,
-        adj_are_relative = False,
-        normalize_by_distance=True,
-        lag_steps=20,
-        relative_lags=True,
-        horizon=15,
-        filter_on_train_only=True,
-        hour_start=6,
-        hour_end=19,
-        quantile_threshold=0.9,
-        quantile_percentage=0.65,
-        lower_bound=0.01,
-        upper_bound=0.99,
-        use_median_instead_of_mean_smoothing=True,
-        drop_weather=True,
-        add_previous_weekday_feature=True,
-        strict_weekday_match=True
-    ):
-        
-        if not add_previous_weekday_feature and strict_weekday_match is not None:
-            warnings.warn("'strict_weekday_match' has no effect since 'add_previous_weekday_feature' is False")
+        # Runtime state ----------------------------------------------------
+        self.df: Optional[pd.DataFrame] = None
+        self.df_orig: Optional[pd.DataFrame] = None
+        self.first_test_timestamp: Optional[pd.Timestamp] = None
+        self.feature_log: dict[str, list[str]] = {}
+        self.smoothing: Optional[str] = None
+        self.smoothing_prev: Optional[str] = None
+        self.upstream_sensor_dict: Optional[dict] = None
+        self.downstream_sensor_dict: Optional[dict] = None
 
-
-        # Determine current smoothing strategy ID
-        smoothing_id = (
-            f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
-            if smooth_speeds else "no_smoothing"
+    # ------------------------------------------------------------------#
+    # Helper – choose sensor encoder
+    # ------------------------------------------------------------------#
+    def _get_sensor_encoder(self):
+        if self.sensor_encoding_type == "ordinal":
+            return OrdinalSensorEncoder(
+                sensor_col=self.sensor_col,
+                new_sensor_col=self.new_sensor_col,
+                disable_logs=self.disable_logs,
+            )
+        if self.sensor_encoding_type == "mean":
+            return MeanSensorEncoder(
+                sensor_col=self.sensor_col,
+                new_sensor_col=self.new_sensor_col,
+                disable_logs=self.disable_logs,
+            )
+        if self.sensor_encoding_type == "onehot":
+            return OneHotSensorEncoder(
+                sensor_col=self.sensor_col,
+                new_sensor_col=self.new_sensor_col,
+                disable_logs=self.disable_logs,
+            )
+        raise ValueError(
+            "Unsupported sensor_encoding_type "
+            f"{self.sensor_encoding_type!r}; choose 'ordinal', 'mean', or 'onehot'."
         )
 
-        # Step 1: Initial data loading and cleaning
+    # ------------------------------------------------------------------#
+    # Main pipeline
+    # ------------------------------------------------------------------#
+    def run_pipeline(
+        self,
+        *,
+        test_size: float = 1 / 3,
+        test_start_time: Optional[Union[str, pd.Timestamp, None]] = None,  # str | pd.Timestamp | None = None,
+        filter_extreme_changes: bool = True,
+        smooth_speeds: bool = True,
+        relative_threshold: float = 0.7,
+        diagnose_extreme_changes: bool = False,
+        add_gman_predictions: bool = False,
+        use_gman_target: bool = False,
+        convert_gman_prediction_to_delta_speed: bool = True,
+        window_size: int = 3,
+        spatial_adj: int = 1,
+        adj_are_relative: bool = False,
+        normalize_by_distance: bool = True,
+        lag_steps: int = 25,
+        relative_lags: bool = True,
+        horizon: int = 15,
+        filter_on_train_only: bool = True,
+        hour_start: int = 6,
+        hour_end: int = 19,
+        quantile_threshold: float = 0.9,
+        quantile_percentage: float = 0.65,
+        lower_bound: float = 0.01,
+        upper_bound: float = 0.99,
+        use_median_instead_of_mean_smoothing: bool = False,
+        drop_weather: bool = True,
+        add_previous_weekday_feature: bool = True,
+        previous_weekday_window_min: int = 5,
+    ):
+        """Execute the full feature‑engineering pipeline and return train/test splits."""
+        # --------------------------------------------------------------#
+        # 0) Decide on train/test split strategy
+        # --------------------------------------------------------------#
+        if test_start_time is not None and test_size != 1 / 3:
+            warnings.warn(
+                "Both 'test_start_time' and 'test_size' were provided; "
+                "defaulting to the explicit date split."
+            )
+        effective_test_size = test_size if test_start_time is None else 1 / 3
+
+        # --------------------------------------------------------------#
+        # 1) Raw loading & basic preprocessing
+        # --------------------------------------------------------------#
+        smoothing_id = (
+            f"smoothing_{window_size}_{'train_only' if filter_on_train_only else 'all'}"
+            if smooth_speeds
+            else "no_smoothing"
+        )
+
         loader = InitialTrafficDataLoader(
             file_path=self.file_path,
             datetime_cols=[self.datetime_col],
             sensor_col=self.sensor_col,
             value_col=self.value_col,
             disable_logs=self.disable_logs,
-            df_gman=self.df_gman
+            df_gman=self.df_gman,
         )
 
         df = loader.get_data(
@@ -102,28 +205,49 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             filter_extreme_changes=filter_extreme_changes,
             smooth_speeds=smooth_speeds,
             relative_threshold=relative_threshold,
-            test_size=test_size,
+            test_size=effective_test_size,
+            test_start_time=test_start_time,  # <-- new
             diagnose_extreme_changes=diagnose_extreme_changes,
             add_gman_predictions=add_gman_predictions,
             use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
-            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed
+            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed,
         )
+
+        # Log actual test‑set ratio if explicit date was used
+        if test_start_time is not None:
+            test_ratio = df["test_set"].mean()
+            self._log(
+                f"Explicit test_start_time={pd.to_datetime(test_start_time)} → "
+                f"test set ratio: {test_ratio:.2%}"
+            )
+
+        # Cache loader artefacts
         self.df_orig = loader.df_orig
         self.first_test_timestamp = loader.first_test_timestamp
-        self.smoothing_prev = self.smoothing
-        self.smoothing = smoothing_id
+        self.smoothing_prev, self.smoothing = self.smoothing, smoothing_id
 
-        # Step 2: DateTime Features
-        dt_features = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
-        df, dt_cols = dt_features.transform(df)
-        self.feature_log['datetime_features'] = dt_cols
+        # --------------------------------------------------------------#
+        # 2) Sensor encoding
+        # --------------------------------------------------------------#
+        self.df = df
+        encoder = self._get_sensor_encoder()
+        df = encoder.encode(df)
 
-        # Step 3: Spatial Features
+        # --------------------------------------------------------------#
+        # 3) Date‑time features
+        # --------------------------------------------------------------#
+        dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
+        df, dt_cols = dt_fe.transform(df)
+        self.feature_log["datetime_features"] = dt_cols
+
+        # --------------------------------------------------------------#
+        # 4) Spatial adjacency features
+        # --------------------------------------------------------------#
         spatial = AdjacentSensorFeatureAdder(
             sensor_dict_path=self.sensor_dict_path,
             spatial_adj=spatial_adj,
             normalize_by_distance=normalize_by_distance,
-            adj_are_relative= adj_are_relative,
+            adj_are_relative=adj_are_relative,
             datetime_col=self.datetime_col,
             value_col=self.value_col,
             sensor_col=self.sensor_col,
@@ -131,11 +255,12 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         )
         self.upstream_sensor_dict = spatial.upstream_sensor_dict
         self.downstream_sensor_dict = spatial.downstream_sensor_dict
-        df, spatial_cols = spatial.transform(
-            df, smoothing_id, self.smoothing_prev)
-        self.feature_log['spatial_features'] = spatial_cols
+        df, spatial_cols = spatial.transform(df, smoothing_id, self.smoothing_prev)
+        self.feature_log["spatial_features"] = spatial_cols
 
-        # Step 4: Temporal Lag Features
+        # --------------------------------------------------------------#
+        # 5) Temporal lags
+        # --------------------------------------------------------------#
         lagger = TemporalLagFeatureAdder(
             lags=lag_steps,
             relative=relative_lags,
@@ -143,114 +268,105 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             disable_logs=self.disable_logs,
             sensor_col=self.sensor_col,
             value_col=self.value_col,
-          
         )
         df, lag_cols = lagger.transform(df, smoothing_id, self.smoothing_prev)
-        self.feature_log['lag_features'] = lag_cols
+        self.feature_log["lag_features"] = lag_cols
 
-        # Step 5: Congestion and Outlier Features
-        congestion = CongestionFeatureEngineer(hour_start=hour_start, hour_end=hour_end,
-                                               quantile_threshold=quantile_threshold, quantile_percentage=quantile_percentage,
-                                               lower_bound=lower_bound, upper_bound=upper_bound)
+        # --------------------------------------------------------------#
+        # 6) Congestion / outlier flags
+        # --------------------------------------------------------------#
+        congestion = CongestionFeatureEngineer(
+            hour_start=hour_start,
+            hour_end=hour_end,
+            quantile_threshold=quantile_threshold,
+            quantile_percentage=quantile_percentage,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
         df, congestion_cols = congestion.transform(df)
-        self.feature_log['congestion_features'] = congestion_cols
-        
-        
+        self.feature_log["congestion_features"] = congestion_cols
+
+        # --------------------------------------------------------------#
+        # 7) Historical reference (previous weekday)
+        # --------------------------------------------------------------#
         if add_previous_weekday_feature:
-            prevday = PreviousWeekdayValueFeatureEngineer(
+            prevday = PreviousWeekdayWindowFeatureEngineer(
                 datetime_col=self.datetime_col,
                 sensor_col=self.sensor_col,
                 value_col=self.value_col,
-                horizon_minutes=horizon,
-                strict_weekday_match=strict_weekday_match,
-                disable_logs=self.disable_logs
+                horizon_min=horizon,
+                window_before_min=previous_weekday_window_min,
+                window_after_min=previous_weekday_window_min,
+                step_min=1,
+                aggs=[],
+                disable_logs=self.disable_logs,
             )
             df, prevday_cols = prevday.transform(df)
-            self.feature_log['previous_day_features'] = prevday_cols
+            self.feature_log["previous_day_features"] = prevday_cols
 
-        # Step 6: Miscellaneous Features
-        misc = MiscellaneousFeatureEngineer(
-            sensor_col=self.sensor_col,
-            new_sensor_id_col=self.new_sensor_id_col,
-            weather_cols=self.weather_cols,
+        # --------------------------------------------------------------#
+        # 8) Optional drop weather columns
+        # --------------------------------------------------------------#
+        if drop_weather:
+            dropper = WeatherFeatureDropper(weather_cols=self.weather_cols)
+            df, dropped_cols = dropper.transform(df)
+            self.feature_log["weather_dropped"] = dropped_cols
+
+        # --------------------------------------------------------------#
+        # 9) Target variable & prediction date
+        # --------------------------------------------------------------#
+        df["date_of_prediction"] = df.groupby(self.sensor_col)[self.datetime_col].shift(
+            -horizon
         )
-        df, misc_cols = misc.transform(df, drop_weather=drop_weather)
-        self.feature_log['miscellaneous_features'] = misc_cols
 
-        # Step 7: Target Variable
         target_creator = TargetVariableCreator(
             horizon=horizon,
-            sensor_col=self.new_sensor_id_col,
+            sensor_col=self.sensor_col,
             value_col=self.value_col,
             datetime_col=self.datetime_col,
-            gman_col='gman_prediction',
+            gman_col="gman_prediction",
             use_gman=use_gman_target,
         )
         df, target_cols = target_creator.transform(df)
-        self.feature_log['target_variables'] = target_cols
+        self.feature_log["target_variables"] = target_cols
 
-        # Store outputs
+        # --------------------------------------------------------------#
+        # 10) Final bookkeeping & return
+        # --------------------------------------------------------------#
         self.df = df
-        self.df['date_of_prediction'] = self.df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
-        self.all_added_features = list(
-            set(col for cols in self.feature_log.values() for col in cols))
+        self.all_added_features = sorted(
+            {col for cols in self.feature_log.values() for col in cols}
+        )
 
-        # Train/test split
-        train_df = df[~df['test_set']].copy()
-        test_df = df[df['test_set']].copy()
+        train_df = df[~df["test_set"]].copy()
+        test_df = df[df["test_set"]].copy()
 
-        X_train = train_df.drop(columns=['target'])
-        y_train = train_df['target']
-        X_test = test_df.drop(columns=['target'])
-        y_test = test_df['target']
+        X_train, y_train = train_df.drop(columns=["target"]), train_df["target"]
+        X_test, y_test = test_df.drop(columns=["target"]), test_df["target"]
 
-        cols_to_drop = ['sensor_id', 'target_total_speed',
-                        'target_speed_delta', 'date', 'sensor_id', 
-                        'test_set', 'gman_prediction_date', 'gman_target_date','date_of_prediction']
+        # Drop helper columns that should not feed the model
+        cols_to_drop = {
+            "sensor_id",
+            "target_total_speed",
+            "target_speed_delta",
+            "date",
+            "test_set",
+            "gman_prediction_date",
+            "gman_target_date",
+            "date_of_prediction",
+        }
+        for subset in (X_train, X_test):
+            subset.drop(columns=[c for c in cols_to_drop if c in subset.columns], inplace=True)
 
-        # Drop unwanted columns
-        for df in [X_train, X_test]:
-
-            df = df.drop(
-                columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
-
-        self.X_train = X_train
-        self.X_test = X_test
-        self.y_train = y_train
-        self.y_test = y_test
+        # Store for debugging / external use
+        self.X_train, self.X_test, self.y_train, self.y_test = (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+        )
 
         return X_train, X_test, y_train, y_test
-
-    def validate_target_computation(self, use_gman_target=False, horizon=15):
-        self._log("Validating target variable...")
-
-        df_test = self.df.copy().sort_values(
-            by=[self.sensor_col, self.datetime_col])
-
-        if use_gman_target:
-            df_test['expected_target'] = (
-                df_test.groupby(self.sensor_col)[
-                    self.value_col].shift(-horizon)
-                - df_test.groupby(self.sensor_col)['gman_prediction'].shift(-horizon)
-            )
-        else:
-            df_test['expected_target'] = (
-                df_test.groupby(self.sensor_col)[
-                    self.value_col].shift(-horizon)
-                - df_test[self.value_col]
-            )
-
-        df_test['target_correct'] = df_test['target'] == df_test['expected_target']
-
-        if df_test['target_correct'].all():
-            self._log("All target values are correct!")
-            return True
-        else:
-            incorrect_rows = df_test[df_test['target_correct'] == False]
-            self._log(
-                f"{len(incorrect_rows)} rows have incorrect target values.")
-            return False
-
 
 # class TrafficMLPipelineOrchestrator(LoggingMixin):
 #     def __init__(
