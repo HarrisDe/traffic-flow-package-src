@@ -6,7 +6,7 @@ from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeries
 from tensorflow import keras
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
-from tensorflow.keras.wrappers.scikit_learn import KerasRegressor
+from scikeras.wrappers import KerasRegressor
 from ..utils.helper_utils import normalize_data
 import pickle
 import warnings
