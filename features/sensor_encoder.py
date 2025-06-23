@@ -22,6 +22,7 @@ class OrdinalSensorEncoder(SensorEncodingStrategy):
 
         if not self.mapping:
             train_df = df[~df['test_set']]
+            self.train_df = train_df.copy()
             unique_ids = sorted(train_df[self.sensor_col].unique())
             self.mapping = {sid: idx for idx, sid in enumerate(unique_ids)}
             self._log(f"Generated ordinal mapping for {len(self.mapping)} sensors.")
@@ -35,9 +36,10 @@ class MeanSensorEncoder(SensorEncodingStrategy):
     Encodes sensor IDs using their average speed (or other value) computed on the training data.
     """
 
-    def __init__(self, sensor_col: str = "sensor_uid", new_sensor_col: str = "sensor_id", disable_logs: bool = False):
+    def __init__(self, sensor_col: str = "sensor_id", new_sensor_col: str = "sensor_uid", disable_logs: bool = False):
         super().__init__(sensor_col=sensor_col, new_sensor_col = new_sensor_col, disable_logs=disable_logs)
         self.mapping: Dict[str, float] = {}
+        self.train_df = None
 
     def encode(self, df: pd.DataFrame) -> pd.DataFrame:
         self._log("Applying mean encoding to sensor IDs using training data.")
@@ -47,6 +49,7 @@ class MeanSensorEncoder(SensorEncodingStrategy):
 
         if not self.mapping:
             train_df = df[~df['test_set']]
+            self.train_df = train_df.copy()
             self.mapping = train_df.groupby(self.sensor_col)["value"].mean().to_dict()
             self._log(f"Generated mean mapping for {len(self.mapping)} sensors.")
 

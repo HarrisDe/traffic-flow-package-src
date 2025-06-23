@@ -14,6 +14,7 @@ from ..features.congestion_features import CongestionFeatureEngineer
 from ..features.historical_reference_features import (
     PreviousWeekdayWindowFeatureEngineer,
 )
+from ..features.base import SensorEncodingStrategy
 from ..features.adjacent_features import AdjacentSensorFeatureAdder
 from ..features.target_variable_feature import TargetVariableCreator
 from ..features.misc_features import WeatherFeatureDropper
@@ -67,6 +68,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.upstream_sensor_dict: Optional[dict] = None
         self.downstream_sensor_dict: Optional[dict] = None
         self._lag_anchor_idx: int = 0                   # remembers first lag position
+        self.sensor_encoder: Optional[SensorEncodingStrategy] = None
+
 
         # split artefacts
         self.X_train = self.X_test = self.y_train = self.y_test = None
@@ -156,6 +159,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         # 2) Sensor encoding
         encoder = self._get_sensor_encoder()
         df = encoder.encode(df)
+        self.sensor_encoder = encoder                                         
 
         # 3) Date-time features
         dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
