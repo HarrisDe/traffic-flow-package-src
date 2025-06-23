@@ -222,9 +222,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         df_gman: Optional[pd.DataFrame] = None,
         convert_gman_prediction_to_delta_speed: bool = True,
         add_previous_weekday_feature: bool = True,
-        previous_weekday_window_min: int = 5,
+        previous_weekday_window_min: int = 0,
         drop_weather: bool = True,
         use_gman_target: bool = False,
+        drop_missing_gman_rows: bool = False
     ):
         if self.base_df is None:
             raise RuntimeError("Call prepare_base_features() first.")
@@ -238,7 +239,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 sensor_col=self.sensor_col,
                 datetime_col=self.datetime_col,
                 convert_to_delta=convert_gman_prediction_to_delta_speed,
-                drop_missing= False
+                drop_missing= drop_missing_gman_rows
             )
             df = adder.transform(df, value_col=self.value_col)
             gman_cols = [adder.prediction_col]
@@ -358,6 +359,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         add_previous_weekday_feature: bool = True,
         previous_weekday_window_min: int = 5,
         use_gman_target: bool = False,
+        drop_missing_gman_rows = False
     ):
 
         # 1) heavy part
@@ -393,6 +395,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             add_previous_weekday_feature=add_previous_weekday_feature,
             previous_weekday_window_min=previous_weekday_window_min,
             use_gman_target=use_gman_target,
+            drop_missing_gman_rows=drop_missing_gman_rows
         )
         
 class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
