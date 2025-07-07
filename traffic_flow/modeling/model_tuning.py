@@ -68,6 +68,7 @@ class ModelTunerXGB:
         self.XGBoost_model_name = XGBoost_model_name or 'XGBoost'
         self.predict_in_batches = predict_in_batches
         self.batch_size = self._estimate_batch_size(gpu_memory_gb)
+        self.best_model = None
 
     def _estimate_batch_size(self ,gpu_memory_gb: float, use_available_memory_ratio: float = 0.5) -> int:
         """
@@ -178,6 +179,8 @@ class ModelTunerXGB:
         if not suppress_output:
             print(f"Retraining time with best params: {training_time:.2f} seconds")
             print(f"Total hyperparameter tuning time: {total_time:.2f} seconds")
+        
+        self.best_model = best_model
 
         return best_model_path, best_params_, training_time, total_time
 
