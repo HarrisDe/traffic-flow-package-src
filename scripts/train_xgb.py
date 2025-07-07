@@ -14,7 +14,7 @@ def main(args):
         sensor_col=args.sensor_col,
         datetime_col=args.datetime_col,
         value_col=args.value_col,
-        new_sensor_id_col=args.new_sensor_id_col,
+        new_sensor_col=args.new_sensor_id_col,
         weather_cols=args.weather_cols.split(',') if args.weather_cols else None,
         disable_logs=args.disable_logs
     )
