@@ -78,6 +78,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
     # Encoder selector
     # ------------------------------------------------------------------ #
     def _get_sensor_encoder(self):
+        self._log(f"Using sensor encoding type: {self.sensor_encoding_type}")
         if self.sensor_encoding_type == "ordinal":
             return OrdinalSensorEncoder(
                 sensor_col=self.sensor_col,

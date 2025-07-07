@@ -1,0 +1,4 @@
+pandas<3.0,>=2.0
+scikit-learn<2.0,>=1.4
+xgboost<3.0,>=2.0
+joblib<2.0,>=1.4
