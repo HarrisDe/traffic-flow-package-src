@@ -45,6 +45,7 @@ def main(args):
         quantile_percentage=args.quantile_percentage,
         lower_bound=args.lower_bound,
         upper_bound=args.upper_bound,
+        previous_weekday_window_min  = args.previous_weekday_window_min
     )
     
     print(f"X_train columns: {X_train.columns.tolist()}")
@@ -168,8 +169,9 @@ if __name__ == "__main__":
     p.add_argument("--params", type=str, default=None, help="Optional JSON string for XGB grid search parameters")
 
     p.add_argument("--objective", default="reg:pseudohubererror")
-    p.add_argument("--suppress-output", action="store_false")
+    p.add_argument("--suppress-output", action="store_true")
     p.add_argument("--n-jobs", type=int, default=-1)
+    p.add_argument("--previous-weekday-window-min", type=int, default=0)
 
     args = p.parse_args()
     main(args)
