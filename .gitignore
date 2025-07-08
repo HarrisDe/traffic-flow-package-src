@@ -6,3 +6,4 @@ artifacts/
 *.pkl
 *.h5
 *.parquet
+traffic_pipeline.joblib
