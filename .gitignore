@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 changes.txt
 my_changes.diff
+artifacts/
+*.pkl
+*.h5
+*.parquet
