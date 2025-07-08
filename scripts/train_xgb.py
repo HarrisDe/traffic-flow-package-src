@@ -1,4 +1,6 @@
-# scripts/train_xgb.py
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse, pathlib, time, joblib, json
 from traffic_flow import (
     TrafficDataPipelineOrchestrator,
@@ -45,8 +47,9 @@ def main(args):
         upper_bound=args.upper_bound,
     )
     
-
+    print(f"X_train columns: {X_train.columns.tolist()}")
     # 2. hyper-parameter tuning
+    params = json.loads(args.params) if args.params else None
     tuner = ModelTunerXGB(
         X_train, X_test, y_train, y_test,
         random_state=args.random_state,
@@ -61,7 +64,7 @@ def main(args):
 
     model_path, best_params, train_time, total_time = tuner.tune_xgboost(
         model_name=args.xgboost_model_name,
-        params=None,  # extend if you want param grid from CLI
+        params=params,  
         use_gpu=args.use_gpu,
         objective=args.objective,
         suppress_output=args.suppress_output,
@@ -162,6 +165,7 @@ if __name__ == "__main__":
     p.add_argument("--use-gpu", action="store_true")
     p.add_argument("--no-use-gpu", dest="use_gpu", action="store_false")
     p.set_defaults(use_gpu=True)
+    p.add_argument("--params", type=str, default=None, help="Optional JSON string for XGB grid search parameters")
 
     p.add_argument("--objective", default="reg:pseudohubererror")
     p.add_argument("--suppress-output", action="store_false")
