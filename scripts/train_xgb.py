@@ -4,6 +4,8 @@ from traffic_flow import (
     TrafficDataPipelineOrchestrator,
     ModelTunerXGB,
 )
+from traffic_flow.constants.constants import (WEATHER_COLUMNS
+)
 
 def main(args):
     t0 = time.perf_counter()
@@ -15,8 +17,9 @@ def main(args):
         datetime_col=args.datetime_col,
         value_col=args.value_col,
         new_sensor_col=args.new_sensor_id_col,
-        weather_cols=args.weather_cols.split(',') if args.weather_cols else None,
-        disable_logs=args.disable_logs
+        weather_cols=WEATHER_COLUMNS,
+        disable_logs=args.disable_logs,
+        sensor_encoding_type='mean'
     )
 
     X_train, X_test, y_train, y_test = tdp.run_pipeline(
@@ -41,6 +44,7 @@ def main(args):
         lower_bound=args.lower_bound,
         upper_bound=args.upper_bound,
     )
+    
 
     # 2. hyper-parameter tuning
     tuner = ModelTunerXGB(
@@ -98,15 +102,14 @@ if __name__ == "__main__":
     p.add_argument("--file", required=True, help="Parquet with raw sensor data")
 
     # === General outputs ===
-    p.add_argument("--out-dir", default="artifacts", help="Output folder for artefact")
+    p.add_argument("--out-dir", default="artifacts", help="Output folder for artifact")
 
     # === TrafficDataPipelineOrchestrator __init__ ===
     p.add_argument("--sensor-col", default="sensor_id")
     p.add_argument("--datetime-col", default="date")
     p.add_argument("--value-col", default="value")
     p.add_argument("--new-sensor-id-col", default="sensor_uid")
-    p.add_argument("--weather-cols", default=None, help="Comma-separated list or leave None")
-    p.add_argument("--disable-logs", action="store_true")
+    p.add_argument("--disable-logs", action="store_false")
 
     # === run_pipeline ===
     p.add_argument("--test-size", type=float, default=1/3)
@@ -151,7 +154,7 @@ if __name__ == "__main__":
     p.add_argument("--n-splits", type=int, default=3)
     p.add_argument("--best-model-name-string-start", default="best_model_")
     p.add_argument("--model-path", default="./models")
-    p.add_argument("--xgboost-model-name", default="XGBoost")
+    p.add_argument("--xgboost-model-name", default="XGBoost_from_train_xgb")
     p.add_argument("--predict-in-batches", action="store_true")
     p.add_argument("--gpu-memory-gb", type=float, default=40.0)
 
@@ -161,7 +164,7 @@ if __name__ == "__main__":
     p.set_defaults(use_gpu=True)
 
     p.add_argument("--objective", default="reg:pseudohubererror")
-    p.add_argument("--suppress-output", action="store_true")
+    p.add_argument("--suppress-output", action="store_false")
     p.add_argument("--n-jobs", type=int, default=-1)
 
     args = p.parse_args()
