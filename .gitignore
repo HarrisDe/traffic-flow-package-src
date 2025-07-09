@@ -1,9 +1,55 @@
+# -------------------------------
+# Python
+# -------------------------------
 __pycache__/
-*.pyc
+*.py[cod]
+*.so
+
+# Virtual environments
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# MacOS metadata
+.DS_Store
+
+# VSCode settings
+.vscode/
+
+# -------------------------------
+# Artifacts folder (ignore all except .gitkeep)
+# -------------------------------
+artifacts/*
+!artifacts/.gitkeep
+
+# -------------------------------
+# Build files
+# -------------------------------
+*.egg-info/
+dist/
+build/
+
+# -------------------------------
+# Logs and outputs
+# -------------------------------
+*.log
 changes.txt
-my_changes.diff
-artifacts/
-*.pkl
-*.h5
+# -------------------------------
+# Data files
+# -------------------------------
 *.parquet
-artifacts/traffic_pipeline.joblib
+*.csv
+*.pkl
+*.joblib
+
+# -------------------------------
+# Other
+# -------------------------------
+*.sqlite3
