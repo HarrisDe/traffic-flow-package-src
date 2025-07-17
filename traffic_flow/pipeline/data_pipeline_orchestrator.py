@@ -6,7 +6,6 @@ import pandas as pd
 from ..features.sensor_encoder import (
     MeanSensorEncoder,
     OrdinalSensorEncoder,
-    OneHotSensorEncoder,
 )
 from ..features.calendar_features import DateTimeFeatureEngineer
 from ..features.temporal_features import TemporalLagFeatureAdder
@@ -89,14 +88,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             return MeanSensorEncoder(
                 sensor_col=self.sensor_col,
                 new_sensor_col=self.new_sensor_col,
+                value_col=self.value_col,
                 disable_logs=self.disable_logs,
             )
-        if self.sensor_encoding_type == "onehot":
-            return OneHotSensorEncoder(
-                sensor_col=self.sensor_col,
-                new_sensor_col=self.new_sensor_col,
-                disable_logs=self.disable_logs,
-            )
+
         raise ValueError(
             f"Unsupported sensor_encoding_type {self.sensor_encoding_type}"
         )
@@ -159,13 +154,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
 
         # 2) Sensor encoding
         encoder = self._get_sensor_encoder()
-        df = encoder.encode(df)
+        encoder.fit(df)
+        df = encoder.transform(df)
         self.sensor_encoder = encoder                                         
 
         # 3) Date-time features
         dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
-        df, dt_cols = dt_fe.transform(df)
-        self.feature_log["datetime_features"] = dt_cols
+        dt_fe.fit(df)
+        df = dt_fe.transform(df)
+
 
         # 4) Spatial adjacency
         spatial = AdjacentSensorFeatureAdder(
