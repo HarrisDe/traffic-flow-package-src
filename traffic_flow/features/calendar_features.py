@@ -1,9 +1,10 @@
 import pandas as pd
 from typing import List, Tuple
-from .base import FeatureTransformer
+from .base import BaseFeatureTransformer
 
 
-class DateTimeFeatureEngineer(FeatureTransformer):
+
+class DateTimeFeatureEngineer(BaseFeatureTransformer):
     """
     Adds calendar-related features extracted from a datetime column.
 
@@ -17,66 +18,54 @@ class DateTimeFeatureEngineer(FeatureTransformer):
         datetime_col (str): Name of the datetime column in the DataFrame.
         disable_logs (bool): If True, disables logging output.
     """
-
-    def __init__(self, datetime_col: str = 'datetime', disable_logs: bool = False):
-        super().__init__(disable_logs)
+    def __init__(
+        self,
+        datetime_col: str = "datetime",
+        *,
+        add_hour: bool = True,
+        add_day: bool = True,
+        add_month: bool = False,
+        add_weekend: bool = True,
+        drop_original: bool = False,
+        disable_logs: bool = False,
+    ):
+        super().__init__(disable_logs=disable_logs)
         self.datetime_col = datetime_col
+        self.add_hour = add_hour
+        self.add_day = add_day
+        self.add_month = add_month
+        self.add_weekend = add_weekend
+        self.drop_original = drop_original
 
-    def add_hour_column(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Adds an 'hour' column from the datetime."""
-        self._log("Adding 'hour' column.")
-        df['hour'] = df[self.datetime_col].dt.hour
-        return df, ['hour']
+    def fit(self, X: pd.DataFrame, y=None):
+        if self.datetime_col not in X.columns:
+            raise ValueError(
+                f"DateTimeFeatureEngineer: '{self.datetime_col}' not found in columns."
+            )
+        out: List[str] = []
+        if self.add_hour: out.append("hour")
+        if self.add_day: out.append("day")
+        if self.add_month: out.append("month")
+        if self.add_weekend: out.extend(["is_saturday", "is_sunday"])
+        self.feature_names_out_ = out
+        return self
 
-    def add_day_column(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Adds a 'day' column (0=Monday, 6=Sunday) from the datetime."""
-        self._log("Adding 'day' column.")
-        df['day'] = df[self.datetime_col].dt.dayofweek
-        return df, ['day']
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = X.copy()
+        dt = pd.to_datetime(X[self.datetime_col], errors="coerce")
 
-    def add_month_column(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Adds a 'month' column (1=January, ..., 12=December) from the datetime."""
-        self._log("Adding 'month' column.")
-        df['month'] = df[self.datetime_col].dt.month
-        return df, ['month']
+        if self.add_hour:
+            X["hour"] = dt.dt.hour
+        if self.add_day:
+            X["day"] = dt.dt.dayofweek
+        if self.add_month:
+            X["month"] = dt.dt.month
+        if self.add_weekend:
+            dow = dt.dt.dayofweek
+            X["is_saturday"] = (dow == 5).astype(int)
+            X["is_sunday"]   = (dow == 6).astype(int)
 
-    def add_weekend_columns(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """
-        Adds binary weekend indicator columns:
-        - is_saturday
-        - is_sunday
-        """
-        self._log("Adding 'is_saturday' and 'is_sunday' columns.")
-        df['is_saturday'] = (df[self.datetime_col].dt.dayofweek == 5).astype(int)
-        df['is_sunday'] = (df[self.datetime_col].dt.dayofweek == 6).astype(int)
-        return df, ['is_saturday', 'is_sunday']
+        if self.drop_original:
+            X.drop(columns=[self.datetime_col], inplace=True)
 
-    def transform(self, df: pd.DataFrame, add_month: bool = False) -> Tuple[pd.DataFrame, List[str]]:
-        """
-        Applies all datetime-related feature transformations to the DataFrame.
-
-        Args:
-            df (pd.DataFrame): Input DataFrame with a datetime column.
-
-        Returns:
-            Tuple[pd.DataFrame, List[str]]: Transformed DataFrame and list of new feature columns.
-        """
-        self._log("Starting calendar feature engineering.")
-
-        new_features: List[str] = []
-
-        df, hour_cols = self.add_hour_column(df)
-        new_features += hour_cols
-
-        df, day_cols = self.add_day_column(df)
-        new_features += day_cols
-
-        if add_month:
-            df, month_cols = self.add_month_column(df)
-            new_features += month_cols
-
-        df, weekend_cols = self.add_weekend_columns(df)
-        new_features += weekend_cols
-
-        self._log(f"Completed calendar features: {new_features}")
-        return df, new_features
+        return X

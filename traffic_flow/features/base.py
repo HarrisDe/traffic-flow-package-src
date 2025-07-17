@@ -1,33 +1,35 @@
 from abc import ABC, abstractmethod
 from gc import disable
 import pandas as pd
-from     typing import Iterable
+from     typing import Iterable, Optional, Dict, Any
 from sklearn.base import BaseEstimator, TransformerMixin
 from ..utils.helper_utils import LoggingMixin 
 
-class SensorEncodingStrategy(ABC, LoggingMixin):
-    """
-    Abstract base class for all sensor encoding strategies with logging support.
-    """
+# class SensorEncodingStrategy(ABC, LoggingMixin):
+#     """
+#     Abstract base class for all sensor encoding strategies with logging support.
+#     """
 
-    def __init__(self, sensor_col: str = "sensor_id", new_sensor_col: str = "sensor_uid", disable_logs: bool = False):
-        super().__init__(disable_logs=disable_logs)
-        self.sensor_col = sensor_col
-        self.new_sensor_col = new_sensor_col
+#     def __init__(self, sensor_col: str = "sensor_id", new_sensor_col: str = "sensor_uid", disable_logs: bool = False):
+#         super().__init__(disable_logs=disable_logs)
+#         self.sensor_col = sensor_col
+#         self.new_sensor_col = new_sensor_col
 
-    @abstractmethod
-    def encode(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Encodes the given sensor column in the dataframe.
+#     @abstractmethod
+#     def encode(self, df: pd.DataFrame) -> pd.DataFrame:
+#         """
+#         Encodes the given sensor column in the dataframe.
 
-        Args:
-            df (pd.DataFrame): Full dataset.
-            is_train (pd.Series): Boolean mask for training rows.
+#         Args:
+#             df (pd.DataFrame): Full dataset.
+#             is_train (pd.Series): Boolean mask for training rows.
 
-        Returns:
-            pd.DataFrame: Modified dataframe with encoded sensor_col.
-        """
-        pass
+#         Returns:
+#             pd.DataFrame: Modified dataframe with encoded sensor_col.
+#         """
+#         pass
+
+
     
     
     
@@ -85,6 +87,40 @@ class BaseFeatureTransformer(BaseEstimator, TransformerMixin, LoggingMixin):
     def _log(self, msg: str):
         if not self.disable_logs:
             print(f"[{self.__class__.__name__}] {msg}")
+            
+            
+            
+class SensorEncodingStrategy(BaseFeatureTransformer,LoggingMixin):
+    """Abstract base for all sensor encoders."""
+
+    def __init__(
+        self,
+        *,
+        sensor_col: str = "sensor_id",
+        new_sensor_col: str = "sensor_uid",
+        disable_logs: bool = False,
+    ):
+        super().__init__(disable_logs=disable_logs)
+        self.sensor_col = sensor_col
+        self.new_sensor_col = new_sensor_col
+        self.fitted_ = False  # sklearn convention: trailing _ means set in fit()
+
+    def fit(self, X, y=None):  # overridden in subclasses
+        self.fitted_ = True
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:  # must override
+        raise NotImplementedError
+
+    # -- persistence helpers (optional but recommended) --
+    def export_state(self) -> Dict[str, Any]:
+        """Return JSON-serializable state for inference."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> "SensorEncodingStrategy":
+        """Rebuild instance from export_state()."""
+        raise NotImplementedError
     
     
     
