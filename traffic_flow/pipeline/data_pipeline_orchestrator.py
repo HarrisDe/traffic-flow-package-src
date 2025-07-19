@@ -130,6 +130,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 "explicit date split takes precedence."
             )
         effective_test_size = test_size if test_start_time is None else 1 / 3
+        
+        self.smoothing_id = f"win{window_size}_{'med' if use_median_instead_of_mean_smoothing else 'mean'}"
 
         # 1) Load & basic cleaning
         loader = InitialTrafficDataLoader(
@@ -151,6 +153,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         )
         self.df_orig = loader.df_orig
         self.first_test_timestamp = loader.first_test_timestamp
+        df.attrs["smoothing_id"] = self.smoothing_id
 
         # 2) Sensor encoding
         encoder = self._get_sensor_encoder()
@@ -162,6 +165,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
         dt_fe.fit(df)
         df = dt_fe.transform(df)
+        self.feature_log["datetime_features"] = dt_fe.feature_names_out_
 
 
         # 4) Spatial adjacency
@@ -174,11 +178,12 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             value_col=self.value_col,
             sensor_col=self.sensor_col,
             disable_logs=self.disable_logs,
+            smoothing_id=self.smoothing_id,
         )
-        self.upstream_sensor_dict = spatial.upstream_sensor_dict
-        self.downstream_sensor_dict = spatial.downstream_sensor_dict
-        df, spatial_cols = spatial.transform(df, None, None)
-        self.feature_log["spatial_features"] = spatial_cols
+        
+        spatial.fit(df)
+        df = spatial.transform(df)
+        self.feature_log["spatial_features"] = spatial.feature_names_out_
 
         # 5) Temporal lags
         lagger = TemporalLagFeatureAdder(
@@ -212,6 +217,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
 
         # cache
         self.base_df = df
+        self.smoothing_id_prev = self.smoothing_id
         return df.copy()
 
     # ================================================================== #
@@ -440,8 +446,6 @@ class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
             return OrdinalSensorEncoder(sensor_col=self.sensor_col, new_sensor_col=self.new_sensor_col, disable_logs=self.disable_logs)
         elif self.sensor_encoding_type == "mean":
             return MeanSensorEncoder(sensor_col=self.sensor_col,new_sensor_col=self.new_sensor_col, disable_logs=self.disable_logs)
-        elif self.sensor_encoding_type == "onehot":
-            return OneHotSensorEncoder(sensor_col=self.sensor_col,new_sensor_col=self.new_sensor_col, disable_logs=self.disable_logs)
         else:
             raise ValueError(f"Unsupported sensor encoding type: {self.sensor_encoding_type},you must choose 'ordinal', 'mean', or 'onehot'.")
 
