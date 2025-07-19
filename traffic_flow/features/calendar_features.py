@@ -69,3 +69,27 @@ class DateTimeFeatureEngineer(BaseFeatureTransformer):
             X.drop(columns=[self.datetime_col], inplace=True)
 
         return X
+
+     # ------------------- persistence -------------------
+    def export_state(self) -> dict:
+        """Return constructor flags so an identical transformer can be rebuilt."""
+        return {
+            "type": "datetime",
+            "datetime_col": self.datetime_col,
+            "add_hour": self.add_hour,
+            "add_day": self.add_day,
+            "add_month": self.add_month,
+            "add_weekend": self.add_weekend,
+            "drop_original": self.drop_original,
+        }
+
+    @classmethod
+    def from_state(cls, state: dict) -> "DateTimeFeatureEngineer":
+        return cls(
+            datetime_col=state["datetime_col"],
+            add_hour=state["add_hour"],
+            add_day=state["add_day"],
+            add_month=state["add_month"],
+            add_weekend=state["add_weekend"],
+            drop_original=state["drop_original"],
+        )
