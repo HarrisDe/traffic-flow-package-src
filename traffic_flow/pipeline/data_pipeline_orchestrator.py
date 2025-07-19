@@ -10,6 +10,8 @@ from ..features.sensor_encoder import (
 from ..features.calendar_features import DateTimeFeatureEngineer
 from ..features.temporal_features import TemporalLagFeatureAdder
 from ..features.congestion_features import CongestionFeatureEngineer
+from ..features.congestion_threshold import PerSensorCongestionFlagger
+from ..features.congestion_outlier_features    import GlobalOutlierFlagger
 from ..features.historical_reference_features import (
     PreviousWeekdayWindowFeatureEngineer,
 )
@@ -67,7 +69,17 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.upstream_sensor_dict: Optional[dict] = None
         self.downstream_sensor_dict: Optional[dict] = None
         self._lag_anchor_idx: int = 0                   # remembers first lag position
+        self.clean_state: Optional[dict] = None
+        self.base_features_prepared = False
+        self.horizon_finalized = False
+        
+        # feature transformers
         self.sensor_encoder: Optional[SensorEncodingStrategy] = None
+        self.datetime_fe: Optional[DateTimeFeatureEngineer] = None
+        self.adjacency_fe: Optional[AdjacentSensorFeatureAdder] = None
+        self.lag_fe: Optional[TemporalLagFeatureAdder] = None
+        self.congestion_flagger:   PerSensorCongestionFlagger | None = None
+        self.outlier_flagger:      GlobalOutlierFlagger | None = None
 
 
         # split artefacts
@@ -123,7 +135,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         upper_bound: float = 0.99,
         use_median_instead_of_mean_smoothing: bool = False,
     ) -> pd.DataFrame:
-
+        
+        
+        print("Running prepare_base_features!!!!!!!!!!!!!!!!")
         if test_start_time is not None and test_size != 1 / 3:
             warnings.warn(
                 "Both 'test_start_time' and 'test_size' supplied; "
@@ -154,6 +168,11 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.df_orig = loader.df_orig
         self.first_test_timestamp = loader.first_test_timestamp
         df.attrs["smoothing_id"] = self.smoothing_id
+        self.clean_state = {
+            "relative_threshold": relative_threshold,
+            "smoothing_window":   window_size,
+            "use_median":         use_median_instead_of_mean_smoothing,
+        }
 
         # 2) Sensor encoding
         encoder = self._get_sensor_encoder()
@@ -165,6 +184,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
         dt_fe.fit(df)
         df = dt_fe.transform(df)
+        self.datetime_fe = dt_fe
         self.feature_log["datetime_features"] = dt_fe.feature_names_out_
 
 
@@ -183,41 +203,67 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         
         spatial.fit(df)
         df = spatial.transform(df)
+        self.adjacency_fe = spatial
         self.feature_log["spatial_features"] = spatial.feature_names_out_
 
         # 5) Temporal lags
-        lagger = TemporalLagFeatureAdder(
+        lag_fe = TemporalLagFeatureAdder(
             lags=lag_steps,
             relative=relative_lags,
             fill_nans_value=-1,
             disable_logs=self.disable_logs,
             sensor_col=self.sensor_col,
             value_col=self.value_col,
+            smoothing_id=self.smoothing_id,
         )
-        df, lag_cols = lagger.transform(df, None, None)
-        self.feature_log["lag_features"] = lag_cols
+        lag_fe.fit(df)
+        df = lag_fe.transform(df)
+        self.lag_fe = lag_fe
+        df = lag_fe.transform(df)
+        self.feature_log["lag_features"] = lag_fe.feature_names_out_
 
-        # 6) Congestion / flags
-        congestion = CongestionFeatureEngineer(
-            hour_start=hour_start,
-            hour_end=hour_end,
-            quantile_threshold=quantile_threshold,
-            quantile_percentage=quantile_percentage,
-            lower_bound=lower_bound,
-            upper_bound=upper_bound,
+        # 6) Congestion flags  -----------------------------------------------
+        cong_flagger = PerSensorCongestionFlagger(
+            hour_start         = hour_start,
+            hour_end           = hour_end,
+            quantile_threshold = quantile_threshold,
+            quantile_percentage= quantile_percentage,
+            sensor_col         = self.sensor_col,
+            value_col          = self.value_col,
+            hour_col           = "hour",
+            disable_logs       = self.disable_logs,
         )
-        df, congestion_cols = congestion.transform(df)
-        self.feature_log["congestion_features"] = congestion_cols
+
+        outlier_flagger = GlobalOutlierFlagger(
+            lower_bound  = lower_bound,
+            upper_bound  = upper_bound,
+            value_col    = self.value_col,
+            sensor_col   = self.sensor_col,
+            disable_logs = self.disable_logs,
+        )
+
+        cong_flagger.fit(df)
+        outlier_flagger.fit(df)
+
+        df  = cong_flagger.transform(df)
+        df  = outlier_flagger.transform(df)
+
+        self.congestion_flagger = cong_flagger
+        self.outlier_flagger    = outlier_flagger
+        self.feature_log["congestion_features"] = cong_flagger.feature_names_out_ \
+                                                + outlier_flagger.feature_names_out_
 
         # remember where lag features start for legacy GMAN col position
-        if lag_cols:
-            self._lag_anchor_idx = df.columns.get_loc(lag_cols[0])
+        if self.feature_log["lag_features"]:
+            lag_cols = self.feature_log["lag_features"]
+            self._lag_anchor_idx = int(df.columns.get_loc(lag_cols[0]))
         else:
             self._lag_anchor_idx = len(df.columns)
 
         # cache
         self.base_df = df
         self.smoothing_id_prev = self.smoothing_id
+        self.base_features_prepared = True
         return df.copy()
 
     # ================================================================== #
@@ -235,7 +281,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         use_gman_target: bool = False,
         drop_missing_gman_rows: bool = False
     ):
-        if self.base_df is None:
+        if not self.base_features_prepared:
             raise RuntimeError("Call prepare_base_features() first.")
 
         df = self.base_df.copy()
@@ -330,6 +376,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             y_train,
             y_test,
         )
+        self.horizon_finalized = True
         return X_train, X_test, y_train, y_test
 
     # ================================================================== #
@@ -405,6 +452,33 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             use_gman_target=use_gman_target,
             drop_missing_gman_rows=drop_missing_gman_rows
         )
+    
+    def export_states(self) -> dict:
+        """
+        Collect everything an inference pipeline will need.
+        Call ONLY after prepare_base_features() has been executed.
+        """
+        if not self.base_features_prepared:
+            raise RuntimeError("Base features not prepared. Run prepare_base_features() first.")
+        if not self.horizon_finalized:
+            raise RuntimeError("Horizon not finalized. Run finalise_for_horizon() first.")
+
+        required = {
+        "clean_state":           self.clean_state,
+        "sensor_encoder_state":  self.sensor_encoder.export_state(),
+        "datetime_state":        self.datetime_fe.export_state(),
+        "adjacency_state":       self.adjacency_fe.export_state(),
+        "lag_state":             self.lag_fe.export_state(),
+        "congestion_state":      self.congestion_flagger.export_state(),
+        "outlier_state":         self.outlier_flagger.export_state(),
+        "feature_cols":          list(self.base_df.columns),
+        }
+        # sanity-check none are None
+        missing = [k for k, v in required.items() if v is None]
+        if missing:
+            raise RuntimeError(f"export_states(): the following pieces are missing {missing}")
+        return required
+
         
 class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
     def __init__(
@@ -634,6 +708,8 @@ class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
         self.y_test = y_test
 
         return X_train, X_test, y_train, y_test
+    
+    
 
 class TrafficDataPipelineOrchestrator_deprecated_v2(LoggingMixin):
     """

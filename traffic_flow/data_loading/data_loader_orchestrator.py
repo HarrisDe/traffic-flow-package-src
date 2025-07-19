@@ -12,6 +12,11 @@ import pandas as pd
 
 from ..features.gman_features import GMANPredictionAdder
 from ..utils.helper_utils import LoggingMixin
+from ..preprocessing.cleaning import (
+    clean_and_cast,
+    filter_and_interpolate_extremes,
+    smooth_speeds,
+)
 
 
 Float = np.float32  # alias only for typing comments
@@ -54,28 +59,10 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
-    def _clean_and_convert_to_float32(self, value: Any) -> Optional[Float]:
-        """Coerce numeric/string to float32 rounded to two decimals."""
-        try:
-            if isinstance(value, float):
-                return np.float32(round(value, 2))
-            return np.float32(round(float(str(value).replace(" ", ".")), 2))
-        except (ValueError, AttributeError):
-            return None  # dropped later
 
     def _apply_clean_and_convert_to_float32(self) -> None:
         assert self.df is not None
-        before = len(self.df)
-        self.df = self.df.dropna(subset=[self.value_col])
-        dropped = before - len(self.df)
-        if dropped:
-            self._log("Discarded {} rows with NaN '{}'.".format(dropped, self.value_col))
-
-        self.df[self.value_col] = (
-            self.df[self.value_col]
-            .apply(self._clean_and_convert_to_float32)
-            .astype(np.float32)
-        )
+        self.df = clean_and_cast(self.df, value_col=self.value_col)
 
     # ------------------------------------------------------------------ #
     # IO
@@ -232,13 +219,12 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
 
     def filter_extreme_changes(self, *, relative_threshold: float = 0.7) -> None:
         assert self.df is not None
-        mask = self._compute_relative_change_mask(relative_threshold)
-        self.df.loc[mask, self.value_col] = np.nan
-        self.df[self.value_col] = (
-            self.df.groupby(self.sensor_col)[self.value_col]
-            .transform(lambda s: s.interpolate().ffill().bfill())
-        )
-        self._log("Interpolated {} extreme changes.".format(mask.sum()))
+        self.df = filter_and_interpolate_extremes(
+        self.df,
+        sensor_col=self.sensor_col,
+        value_col=self.value_col,
+        threshold=relative_threshold,
+    )
 
     def smooth_speeds(
         self,
@@ -248,26 +234,21 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         use_median_instead_of_mean: bool = True,
     ) -> None:
         assert self.df is not None
-        if "test_set" not in self.df.columns:
-            self.add_test_set_column()
-
-        mask = ~self.df["test_set"] if filter_on_train_only else self.df.index == self.df.index
-
-        def roll_fn(s):
-            if use_median_instead_of_mean:
-                return s.rolling(window=window_size, min_periods=1, center=False).median()
-            return s.rolling(window=window_size, min_periods=1, center=False).mean()
-
-        smoothed = (
-            self.df.loc[mask]
-            .groupby(self.sensor_col)[self.value_col]
-            .transform(roll_fn)
-        )
-        self.df.loc[mask, self.value_col] = smoothed.ffill().bfill()
-        self._log(
-            "Smoothing applied (window={}, {}, {}).".format(
-                window_size,
-                "median" if use_median_instead_of_mean else "mean",
-                "train-only" if filter_on_train_only else "all rows",
+        if filter_on_train_only and "test_set" in self.df.columns:
+            mask = ~self.df["test_set"]
+            smoothed_part = smooth_speeds(
+                self.df.loc[mask],
+                sensor_col=self.sensor_col,
+                value_col=self.value_col,
+                window_size=window_size,
+                use_median=use_median_instead_of_mean,
             )
-        )
+            self.df.loc[mask] = smoothed_part
+        else:
+            self.df = smooth_speeds(
+                self.df,
+                sensor_col=self.sensor_col,
+                value_col=self.value_col,
+                window_size=window_size,
+                use_median=use_median_instead_of_mean,
+            )
