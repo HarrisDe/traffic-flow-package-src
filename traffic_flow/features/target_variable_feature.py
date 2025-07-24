@@ -1,10 +1,10 @@
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 import numpy as np
 import pandas as pd
-from .base import FeatureTransformer
+from .base import BaseFeatureTransformer
 
 
-class TargetVariableCreator(FeatureTransformer):
+class TargetVariableCreator(BaseFeatureTransformer):
     """
     Adds target variables for supervised learning.
 
@@ -36,8 +36,25 @@ class TargetVariableCreator(FeatureTransformer):
         self.value_col = value_col
         self.gman_col = gman_col
         self.use_gman = use_gman
+        self.fitted_ = False
+        
+        self.feature_names_out_ = [
+            "target_total_speed",
+            "target_speed_delta",
+            "target",
+        ]
+    
+    # -----------------------------------------------------------------
+    def fit(self, X, y=None):
+        # Just validate needed columns
+        missing = [c for c in (self.sensor_col, self.datetime_col, self.value_col) if c not in X.columns]
+        if missing:
+            raise ValueError(f"TargetVariableCreator missing {missing}")
+        self.fitted_ = True
+        return self
 
     def transform(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+        
         """
         Adds prediction targets to the DataFrame.
 
@@ -47,6 +64,8 @@ class TargetVariableCreator(FeatureTransformer):
         Returns:
             Tuple[pd.DataFrame, List[str]]: DataFrame with new target columns and list of added columns.
         """
+        if not self.fitted_:
+            raise RuntimeError("Call fit() first.")
         self._log("Creating target variables.")
         df = df.sort_values(by=[self.sensor_col, self.datetime_col]).copy()
 
@@ -70,4 +89,35 @@ class TargetVariableCreator(FeatureTransformer):
         # Drop incomplete rows (NaNs at horizon edges)
         df = df.dropna(subset=['target'])
         self._log(f"Final target column ready. {df.shape[0]} rows retained after dropping NaNs.")
-        return df, used_cols
+        self.feature_names_out_ = used_cols
+        return df
+    
+        # ------------------------ persistence ----------------------------
+    def export_state(self) -> Dict[str, Any]:
+        return {
+            "type": "target_creator",
+            "params": dict(
+                horizon=self.horizon,
+                sensor_col=self.sensor_col,
+                datetime_col=self.datetime_col,
+                value_col=self.value_col,
+                gman_col=self.gman_col,
+                use_gman=self.use_gman,
+            ),
+        }
+
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> "TargetVariableCreator":
+        params = state["params"]
+        inst = cls(
+            horizon=params["horizon"],
+            sensor_col=params["sensor_col"],
+            datetime_col=params["datetime_col"],
+            value_col=params["value_col"],
+            gman_col=params["gman_col"],
+            use_gman=params["use_gman"],
+            disable_logs=False,
+        )
+        inst.fitted_ = True
+        return inst
+    

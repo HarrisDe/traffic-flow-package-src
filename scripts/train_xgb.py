@@ -74,18 +74,27 @@ def main(args):
     best_model = tuner.best_model
 
     # 3. bundle preprocessor + model into ONE artifact
+    # bundle = {
+    #     "preprocessor": tdp,
+    #     "model": best_model,
+    #     "feature_cols": list(X_train.columns),
+    #     "best_params": best_params,
+    #     "training_time": train_time,
+    #     "total_time": total_time,
+    # }
     bundle = {
-        "preprocessor": tdp,
-        "model": best_model,
-        "feature_cols": list(X_train.columns),
-        "best_params": best_params,
-        "training_time": train_time,
-        "total_time": total_time,
+        "states": tdp.export_states(),
+        'model': best_model,
+        'feature_cols': list(X_train.columns),
+        'best_params': best_params,
+        "horizon": args.horizon,
+        'training_time': train_time,
+        'total_time': total_time
     }
 
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "traffic_pipeline.joblib"
+    out_file = out_dir / f"traffic_pipeline_h-{args.horizon}.joblib"
     joblib.dump(bundle, out_file)
 
     # 4. save a lightweight JSON with just metrics / params (optional)

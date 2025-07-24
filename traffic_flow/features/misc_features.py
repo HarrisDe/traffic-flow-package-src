@@ -1,73 +1,52 @@
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import pandas as pd
-from .base import  FeatureTransformer, SensorEncodingStrategy
+from .base import  FeatureTransformer, SensorEncodingStrategy, BaseFeatureTransformer
 
 
-
-class WeatherFeatureDropper(FeatureTransformer):
-    """
-    Drops weather-related columns from the DataFrame, if present.
-    """
-
-    def __init__(self, weather_cols: List[str] = None, disable_logs: bool = False):
-        super().__init__(disable_logs)
-        self.weather_cols = weather_cols or []
-
-    def transform(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        self._log("Dropping weather-related features.")
-        before_cols = set(df.columns)
-        df = df.drop(columns=[col for col in self.weather_cols if col in df.columns], errors='ignore')
-        dropped = list(before_cols - set(df.columns))
-        self._log(f"Dropped columns: {dropped}")
-        return df, dropped
-
-class MiscellaneousFeatureEngineerDeprecated(FeatureTransformer):
-    """
-    Applies sensor ID encoding and removes unwanted meta features like weather columns.
     
-    Args:
-        encoder (SensorEncodingStrategy): Strategy to encode sensor identifiers.
-        weather_cols (Optional[List[str]]): Weather-related columns to drop.
-        disable_logs (bool): If True, disables logging.
+class WeatherFeatureDropper(BaseFeatureTransformer):
+    """
+    Removes the weather columns specified at construction time.
+
+    •  Learns *nothing* ⇒ `fit()` only records which of the requested
+       columns are actually present in the training frame.
+    •  Provides `export_state()` / `from_state()` so the exact same
+       columns are dropped during inference.
     """
 
-    def __init__(self,
-                 encoder: SensorEncodingStrategy,
-                 weather_cols: Optional[List[str]] = None,
-                 disable_logs: bool = False):
-        super().__init__(disable_logs)
-        self.encoder = encoder
-        self.weather_cols = weather_cols or []
+    def __init__(
+        self,
+        *,
+        weather_cols: List[str] | None = None,
+        disable_logs: bool = False,
+    ):
+        super().__init__(disable_logs=disable_logs)
+        self.requested_cols = list(weather_cols or [])
+        self.cols_to_drop_: List[str] = []
+        self.fitted_ = False
+        self.feature_names_out_: List[str] = []   # empty → we *remove* cols
 
-    def encode_sensor_ids(self, df: pd.DataFrame, is_train: pd.Series) -> Tuple[pd.DataFrame, List[str]]:
-        """Encodes sensor identifiers using the provided strategy."""
-        self._log("Encoding sensor IDs using provided strategy.")
-        df = self.encoder.encode(df, is_train)
-        return df, [self.encoder.sensor_col]
+    # -----------------------------------------------------------------
+    def fit(self, X, y=None):
+        self.cols_to_drop_ = [c for c in self.requested_cols if c in X.columns]
+        self.fitted_ = True
+        self._log(f"Will drop {self.cols_to_drop_ or 'no columns'}")
+        return self
 
-    def drop_weather_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-        """Drops weather-related features if they exist."""
-        self._log("Dropping weather-related columns.")
-        before_cols = set(df.columns)
-        df = df.drop(columns=[col for col in self.weather_cols if col in df.columns], errors='ignore')
-        dropped = list(before_cols - set(df.columns))
-        self._log(f"Dropped columns: {dropped}")
-        return df, dropped
+    def transform(self, X: pd.DataFrame):
+        if not self.fitted_:
+            raise RuntimeError("Call fit() or from_state() first.")
 
-    def transform(self, df: pd.DataFrame, is_train: pd.Series, drop_weather: bool = True) -> Tuple[pd.DataFrame, List[str]]:
-        """
-        Applies all transformations.
+        return X.drop(columns=self.cols_to_drop_, errors="ignore")
 
-        Args:
-            df (pd.DataFrame): Input data.
-            is_train (pd.Series): Boolean Series indicating training samples.
-            drop_weather (bool): Whether to remove weather-related columns.
+    # ------------------------ persistence ----------------------------
+    def export_state(self) -> Dict[str, Any]:
+        return {"type": "weather_dropper", "cols_to_drop": self.cols_to_drop_}
 
-        Returns:
-            Tuple[pd.DataFrame, List[str]]: Transformed DataFrame and list of added/dropped feature names.
-        """
-        df, enc_cols = self.encode_sensor_ids(df, is_train)
-        if drop_weather:
-            df, dropped_cols = self.drop_weather_features(df)
-            return df, enc_cols + dropped_cols
-        return df, enc_cols
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> "WeatherFeatureDropper":
+        inst = cls(weather_cols=state["cols_to_drop"])
+        inst.cols_to_drop_ = state["cols_to_drop"]
+        inst.fitted_ = True
+        return inst
+

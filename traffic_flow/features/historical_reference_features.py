@@ -1,8 +1,8 @@
 # features/historical_reference_window_features.py
 import pandas as pd
 from datetime import timedelta
-from typing import List, Sequence, Tuple, Set, Optional
-from .base import FeatureTransformer , BaseAggregator          # unchanged
+from typing import List, Sequence, Tuple, Set, Optional, Dict, Any
+from .base import FeatureTransformer , BaseAggregator, BaseFeatureTransformer          # unchanged
 
 
 
@@ -76,7 +76,7 @@ _VALID_AGGS: Set[str]  = {"mean", "min", "max", "std", "median"}
 _VALID_MODES: Set[str] = {"climatology", "local"}
 
 # ------------------------------------------------------------------
-class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
+class PreviousWeekdayWindowFeatureEngineer(BaseFeatureTransformer):
     """
     Add raw & aggregated *previous-weekday* reference features.
 
@@ -116,6 +116,9 @@ class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
         self.win_before  = timedelta(minutes=window_before_min)
         self.win_after   = timedelta(minutes=window_after_min)
         self.step        = timedelta(minutes=step_min)
+        self.fitted_ = False
+        self.agg_fn = agg_fn
+        self.feature_names_out_ :List[str] = []
 
         # aggregation config & validation --------------------------
         self.aggs = list(aggs or [])
@@ -136,9 +139,13 @@ class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
 
         self._log(
             f"horizon={horizon_min}′  window=[-{window_before_min},+{window_after_min}]′ "
-            f"step={step_min}′  aggs={self.aggs or '-'}  mode={self.agg_mode}",
-            level="debug",
+            f"step={step_min}′  aggs={self.aggs or '-'}  mode={self.agg_mode}"
         )
+        
+    # sklearn API ----------------------------------------------------
+    def fit(self, X, y=None):        # Stateless – just mark fitted
+        self.fitted_ = True
+        return self
 
     # ───────────────────────────────────────────────────────────
     def _lookup_shift(self, ts: pd.Timestamp) -> timedelta:
@@ -165,6 +172,9 @@ class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
         new_raw_cols : list[str]
             Names of the raw window columns added.
         """
+        if not self.fitted_:
+            raise ValueError("This feature transformer must be fitted before use.")
+        
         # ── 0.  Defensive copy & datetime cast  --------------------
         df = df_in.copy()
         df[self.dt] = pd.to_datetime(df[self.dt])    # ensures timezone-aware ops
@@ -253,14 +263,51 @@ class PreviousWeekdayWindowFeatureEngineer(FeatureTransformer):
 
         # ── 4.  Cleanup & return  ---------------------------------
         df.drop(columns="lookup_time", inplace=True, errors="ignore")
-        return df, raw_cols
+        self.feature_names_out_ = raw_cols
+        return df
 
-
+    def export_state(self) -> Dict[str, Any]:
+        return {
+            "type": "prev_weekday_window",
+            "params": {
+                "datetime_col": self.dt,
+                "sensor_col": self.sid,
+                "value_col": self.val,
+                "horizon_min": int(self.horizon.total_seconds() / 60),
+                "window_before_min": int(self.win_before.total_seconds() / 60),
+                "window_after_min": int(self.win_after.total_seconds() / 60),
+                "step_min": int(self.step.total_seconds() / 60),
+                "aggs": self.aggs,
+                "agg_mode": self.agg_mode,
+                "agg_fn": self.agg_fn,
+            },
+        }
+    
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> "PreviousWeekdayWindowFeatureEngineer":
+        params = state["params"]
+        inst = cls(
+            datetime_col=params["datetime_col"],
+            sensor_col=params["sensor_col"],
+            value_col=params["value_col"],
+            horizon_min=params["horizon_min"],
+            window_before_min=params["window_before_min"],
+            window_after_min=params["window_after_min"],
+            step_min=params["step_min"],
+            aggs=params["aggs"],
+            agg_mode=params["agg_mode"],
+            agg_fn=params["agg_fn"],
+            disable_logs=False,  # Not serialized, defaults to False
+        )
+        inst.fitted_ = True
+        
+        return inst
     
 # ------------------------------------------------------------------   
     
 class PreviousWeekdayValueFeatureEngineer(FeatureTransformer):
     """
+    Deprecated: use PreviousWeekdayWindowFeatureEngineer instead.
     Adds a feature representing the value of each sensor from the previous non-weekend day,
     shifted forward by a specified horizon (in minutes). The feature uses a pivoted lookup table
     and supports optional filtering based on weekday alignment.
