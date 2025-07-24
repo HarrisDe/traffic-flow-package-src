@@ -301,8 +301,9 @@ class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
                 aggs=[],
                 disable_logs=self.disable_logs,
             )
-            df, prevday_cols = prevday.transform(df)
-            self.feature_log["previous_day_features"] = prevday_cols
+            prevday.fit(df)
+            df = prevday.transform(df)
+            self.feature_log["previous_day_features"] = prevday.feature_names_out_
 
         # --------------------------------------------------------------#
         # 8) Optional drop weather columns

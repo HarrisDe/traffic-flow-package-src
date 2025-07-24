@@ -219,7 +219,6 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         lag_fe.fit(df)
         df = lag_fe.transform(df)
         self.lag_fe = lag_fe
-        df = lag_fe.transform(df)
         self.feature_log["lag_features"] = lag_fe.feature_names_out_
 
         # 6) Congestion flags  -----------------------------------------------
@@ -307,6 +306,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             anchor = self._lag_anchor_idx
             cols_current[anchor:anchor] = gman_cols
             df = df[cols_current]
+            self.gman_adder = adder
             self.feature_log["gman_predictions"] = gman_cols
 
         # --- previous weekday -----------------------------------------
@@ -322,14 +322,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 aggs=[],
                 disable_logs=self.disable_logs,
             )
-            df, prev_cols = prev.transform(df)
-            self.feature_log.setdefault("previous_day_features", []).extend(prev_cols)
+            prev.fit(df)
+            df = prev.transform(df)
+            self.previous_day_fe = prev
+            self.feature_log["previous_day_features"] = prev.feature_names_out_
 
         # --- drop weather ---------------------------------------------
         if drop_weather:
-            dropper = WeatherFeatureDropper(weather_cols=self.weather_cols)
-            df, dropped_cols = dropper.transform(df)
-            self.feature_log["weather_dropped"] = dropped_cols
+            weather_dropper = WeatherFeatureDropper(weather_cols=self.weather_cols,disable_logs=self.disable_logs)
+            weather_dropper.fit(df)
+            df = weather_dropper.transform(df)
+            self.feature_log["weather_dropped"] = weather_dropper.cols_to_drop_
+            self.weather_dropper = weather_dropper
 
         # --- target & prediction date ---------------------------------
         df["date_of_prediction"] = df.groupby(self.sensor_col)[self.datetime_col].shift(
@@ -344,8 +348,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             gman_col="gman_prediction",
             use_gman=use_gman_target,
         )
-        df, target_cols = target_creator.transform(df)
-        self.feature_log["target_variables"] = target_cols
+        target_creator.fit(df)
+        df = target_creator.transform(df)
+        self.target_creator = target_creator
+        self.feature_log["target_variables"] = target_creator.feature_names_out_
 
         # --- split -----------------------------------------------------
         train_df = df[~df["test_set"]].copy()
@@ -471,7 +477,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         "lag_state":             self.lag_fe.export_state(),
         "congestion_state":      self.congestion_flagger.export_state(),
         "outlier_state":         self.outlier_flagger.export_state(),
-        "feature_cols":          list(self.base_df.columns),
+        "target_state":          self.target_creator.export_state(),
+        "previous_day_state":    self.previous_day_fe.export_state(),
+        "weather_state":         self.weather_dropper.export_state(),
+        "feature_cols":          list(self.X_train.columns),
         }
         # sanity-check none are None
         missing = [k for k, v in required.items() if v is None]
