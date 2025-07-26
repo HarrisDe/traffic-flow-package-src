@@ -87,6 +87,11 @@ class BaseFeatureTransformer(BaseEstimator, TransformerMixin, LoggingMixin):
     def _log(self, msg: str):
         if not self.disable_logs:
             print(f"[{self.__class__.__name__}] {msg}")
+    
+        # Helper called at end of from_state() in subclasses
+    def _mark_fitted(self):
+        self.fitted_ = True
+        return self
             
             
             

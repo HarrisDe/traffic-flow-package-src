@@ -218,4 +218,4 @@ class AdjacentSensorFeatureAdder(BaseFeatureTransformer):
             fill_nans_value=state["fill_nans_value"],
             epsilon=state["epsilon"],
             smoothing_id=state["smoothing_id"],
-        )
+        )._mark_fitted()

@@ -23,6 +23,7 @@ from ..features.gman_features import GMANPredictionAdder
 from ..data_loading.data_loader_orchestrator import InitialTrafficDataLoader
 from ..constants.constants import WEATHER_COLUMNS
 from ..utils.helper_utils import LoggingMixin
+from ..preprocessing.dtypes import build_dtype_schema, enforce_dtypes
 
 
 class TrafficDataPipelineOrchestrator(LoggingMixin):
@@ -116,12 +117,12 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         *,
         test_size: float = 1 / 3,
         test_start_time: Optional[Union[str, pd.Timestamp]] = None,
-        filter_on_train_only: bool = True,
+        filter_on_train_only: bool = False,
         filter_extreme_changes: bool = True,
         smooth_speeds: bool = True,
         relative_threshold: float = 0.7,
         diagnose_extreme_changes: bool = False,
-        window_size: int = 3,
+        window_size: int = 5,
         spatial_adj: int = 1,
         adj_are_relative: bool = False,
         normalize_by_distance: bool = True,
@@ -166,6 +167,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             diagnose_extreme_changes=diagnose_extreme_changes,
         )
         self.df_orig = loader.df_orig
+        self.df_orig_smoothed = loader.df_orig_smoothed
         self.first_test_timestamp = loader.first_test_timestamp
         df.attrs["smoothing_id"] = self.smoothing_id
         self.clean_state = {
@@ -178,7 +180,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         encoder = self._get_sensor_encoder()
         encoder.fit(df)
         df = encoder.transform(df)
-        self.sensor_encoder = encoder                                         
+        self.sensor_encoder = encoder  
+        self.sensor_encoder_mapping = encoder.mapping_                                       
 
         # 3) Date-time features
         dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
@@ -271,14 +274,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
     def finalise_for_horizon(
         self,
         *,
-        horizon: int,
+        horizon: int = 15,
         df_gman: Optional[pd.DataFrame] = None,
         convert_gman_prediction_to_delta_speed: bool = True,
         add_previous_weekday_feature: bool = True,
         previous_weekday_window_min: int = 0,
         drop_weather: bool = True,
         use_gman_target: bool = False,
-        drop_missing_gman_rows: bool = False
+        drop_missing_gman_rows: bool = False,
+        drop_datetime: bool = True
     ):
         if not self.base_features_prepared:
             raise RuntimeError("Call prepare_base_features() first.")
@@ -352,6 +356,12 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         df = target_creator.transform(df)
         self.target_creator = target_creator
         self.feature_log["target_variables"] = target_creator.feature_names_out_
+        
+        # --- after all features added, before split ---
+        # Enforce lightweight dtypes on the entire frame (features + target + bookkeeping).
+        dtype_schema = build_dtype_schema(df)
+        df = enforce_dtypes(df, dtype_schema)
+        self.dtype_schema = dtype_schema
 
         # --- split -----------------------------------------------------
         train_df = df[~df["test_set"]].copy()
@@ -360,16 +370,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         X_train, y_train = train_df.drop(columns=["target"]), train_df["target"]
         X_test, y_test = test_df.drop(columns=["target"]), test_df["target"]
 
-        cols_to_drop: Set[str] = {
+        cols_to_drop: List[str] = [
             "sensor_id",
             "target_total_speed",
             "target_speed_delta",
-            "date",
             "test_set",
             "gman_prediction_date",
             "gman_target_date",
             "date_of_prediction",
-        }
+        ]
+        if drop_datetime:
+            cols_to_drop.append(self.datetime_col)
+        
         for subset in (X_train, X_test):
             subset.drop(
                 columns=[c for c in cols_to_drop if c in subset.columns], inplace=True
@@ -388,22 +400,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
     # ================================================================== #
     # Legacy façade – same signature / behaviour as before               #
     # ================================================================== #
+    
     def run_pipeline(
         self,
         *,
         # base args
         test_size: float = 1 / 3,
         test_start_time: Optional[Union[str, pd.Timestamp]] = None,
-        filter_on_train_only: bool = True,
+        filter_on_train_only: bool = False,
         filter_extreme_changes: bool = True,
         smooth_speeds: bool = True,
         relative_threshold: float = 0.7,
         diagnose_extreme_changes: bool = False,
-        add_gman_predictions: bool = False,  # kept for BC
+        add_gman_predictions: bool = False, 
         convert_gman_prediction_to_delta_speed: bool = True,
-        window_size: int = 3,
+        window_size: int = 5,
         spatial_adj: int = 1,
-        adj_are_relative: bool = False,
+        adj_are_relative: bool = True,
         normalize_by_distance: bool = True,
         lag_steps: int = 25,
         relative_lags: bool = True,
@@ -418,9 +431,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         horizon: int = 15,
         drop_weather: bool = True,
         add_previous_weekday_feature: bool = True,
-        previous_weekday_window_min: int = 5,
+        previous_weekday_window_min: int = 0,
         use_gman_target: bool = False,
-        drop_missing_gman_rows = False
+        drop_missing_gman_rows = False,
+        drop_datetime = True
     ):
 
         # 1) heavy part
@@ -456,7 +470,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             add_previous_weekday_feature=add_previous_weekday_feature,
             previous_weekday_window_min=previous_weekday_window_min,
             use_gman_target=use_gman_target,
-            drop_missing_gman_rows=drop_missing_gman_rows
+            drop_missing_gman_rows=drop_missing_gman_rows,
+            drop_datetime=drop_datetime
         )
     
     def export_states(self) -> dict:
@@ -481,6 +496,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         "previous_day_state":    self.previous_day_fe.export_state(),
         "weather_state":         self.weather_dropper.export_state(),
         "feature_cols":          list(self.X_train.columns),
+        "dtype_schema":          getattr(self, "dtype_schema", None)
         }
         # sanity-check none are None
         missing = [k for k, v in required.items() if v is None]

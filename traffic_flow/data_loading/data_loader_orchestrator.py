@@ -53,6 +53,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         # mutable state
         self.df: Optional[pd.DataFrame] = None
         self.df_orig: Optional[pd.DataFrame] = None
+        self.df_orig_smoothed: Optional[pd.DataFrame] = None
         self.datetime_col: Optional[str] = None
         self.first_test_timestamp: Optional[pd.Timestamp] = None
 
@@ -183,6 +184,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
                 filter_on_train_only=filter_on_train_only,
                 use_median_instead_of_mean=use_median_instead_of_mean,
             )
+            self.df_orig_smoothed = self.df
 
         if add_gman_predictions:
             warnings.warn(
@@ -226,15 +228,52 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         threshold=relative_threshold,
     )
 
+    # def smooth_speeds(
+    #     self,
+    #     *,
+    #     window_size: int = 5,
+    #     filter_on_train_only: bool = True,
+    #     use_median_instead_of_mean: bool = True,
+    # ) -> None:
+    #     assert self.df is not None
+    #     if filter_on_train_only and "test_set" in self.df.columns:
+    #         mask = ~self.df["test_set"]
+    #         smoothed_part = smooth_speeds(
+    #             self.df.loc[mask],
+    #             sensor_col=self.sensor_col,
+    #             value_col=self.value_col,
+    #             window_size=window_size,
+    #             use_median=use_median_instead_of_mean,
+    #         )
+    #         self.df.loc[mask] = smoothed_part
+    #     else:
+    #         self.df = smooth_speeds(
+    #             self.df,
+    #             sensor_col=self.sensor_col,
+    #             value_col=self.value_col,
+    #             window_size=window_size,
+    #             use_median=use_median_instead_of_mean,
+    #         )
+    
     def smooth_speeds(
         self,
         *,
         window_size: int = 5,
         filter_on_train_only: bool = True,
         use_median_instead_of_mean: bool = True,
-    ) -> None:
+        smooth_on_train_and_test_separately: bool = True,
+        ) -> None:
         assert self.df is not None
+
+        if filter_on_train_only and smooth_on_train_and_test_separately:
+            warnings.warn(
+                "`filter_on_train_only=True` implies test is untouched, "
+                "so `smooth_on_train_and_test_separately=True` has no effect.",
+                RuntimeWarning,
+            )
+
         if filter_on_train_only and "test_set" in self.df.columns:
+            # Smooth only training set
             mask = ~self.df["test_set"]
             smoothed_part = smooth_speeds(
                 self.df.loc[mask],
@@ -244,7 +283,22 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
                 use_median=use_median_instead_of_mean,
             )
             self.df.loc[mask] = smoothed_part
+
+        elif smooth_on_train_and_test_separately and "test_set" in self.df.columns:
+            # Smooth train and test independently
+            for subset in [True, False]:
+                mask = self.df["test_set"] == subset
+                smoothed = smooth_speeds(
+                    self.df.loc[mask],
+                    sensor_col=self.sensor_col,
+                    value_col=self.value_col,
+                    window_size=window_size,
+                    use_median=use_median_instead_of_mean,
+                )
+                self.df.loc[mask] = smoothed
+
         else:
+            # Smooth full dataset
             self.df = smooth_speeds(
                 self.df,
                 sensor_col=self.sensor_col,
