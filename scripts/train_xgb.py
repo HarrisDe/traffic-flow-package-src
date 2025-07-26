@@ -1,15 +1,21 @@
 import sys
 from pathlib import Path
+import pandas as pd
+from datetime import datetime
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse, pathlib, time, joblib, json
 from traffic_flow import (
     TrafficDataPipelineOrchestrator,
     ModelTunerXGB,
+    ModelEvaluator
 )
 from traffic_flow.constants.constants import (WEATHER_COLUMNS
 )
 
 def main(args):
+    timestamp = datetime.now().strftime("%y%m%d")
+    for k, v in vars(args).items():
+        print(f"  {k}: {v}")
     t0 = time.perf_counter()
 
     # 1. run the feature-engineering pipeline
@@ -72,7 +78,64 @@ def main(args):
         n_jobs=args.n_jobs
     )
     best_model = tuner.best_model
+    
+        # === Evaluate model ===
+    me = ModelEvaluator(
+        X_test=X_test,
+        y_test=y_test,
+        y_train=y_train,
+        target_is_gman_error_prediction=False,
+        df_for_ML=tdp.df,
+        y_is_normalized=False,
+        rounding=2
+    )
+    out_dir = pathlib.Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    
+    results = me.evaluate_model_from_path(model_path)
+    metrics = results['metrics']
+    metrics_std = results['metrics_std']
+    naive_metrics = results['naive_metrics']
+    naive_metrics_std = results['naive_metrics_std']
+    
+    print("\n Model Evaluation Metrics")
+    print(json.dumps({
+        "metrics": metrics,
+        "metrics_std": metrics_std,
+        "naive_metrics": naive_metrics,
+        "naive_metrics_std": naive_metrics_std
+    }, indent=2))
+    
+    metrics_file = out_dir / "metrics.json"
+    metrics_file.write_text(json.dumps({
+        "metrics": metrics,
+        "metrics_std": metrics_std,
+        "naive_metrics": naive_metrics,
+        "naive_metrics_std": naive_metrics_std
+    }, indent=2))
+    
+     # ----- Save raw predictions ---------------------------------
+    time_axis = tdp.df.loc[tdp.df["test_set"],
+                           ["date_of_prediction", "sensor_id"]]
 
+    # keep the ground truth only once and call it "y_test"
+    df_pred = pd.concat(
+        [time_axis,
+            me.y_test.rename("y_test"),   
+            me.y_pred], axis=1
+    )
+    df_pred.columns = [
+        "date",
+        "sensor_id",
+        "y_test",                     
+        f"y_pred_h_{args.horizon}",
+    ]
+    predictions_file = out_dir / f"{timestamp}_all_predictions_h-{args.horizon}.parquet"
+    df_pred.to_parquet(predictions_file)
+    df_pred.to_csv(out_dir / f"{timestamp}_all_predictions_h-{args.horizon}.csv", index=False)
+    
+    
     # 3. bundle preprocessor + model into ONE artifact
     # bundle = {
     #     "preprocessor": tdp,
@@ -92,13 +155,13 @@ def main(args):
         'total_time': total_time
     }
 
-    out_dir = pathlib.Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"traffic_pipeline_h-{args.horizon}.joblib"
+    # out_dir = pathlib.Path(args.out_dir)
+    # out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{timestamp}_traffic_pipeline_h-{args.horizon}.joblib"
     joblib.dump(bundle, out_file)
 
     # 4. save a lightweight JSON with just metrics / params (optional)
-    meta_file = out_dir / "training_metadata.json"
+    meta_file = out_dir / f"{timestamp}_training_metadata.json"
     meta_file.write_text(json.dumps(
         {k: v for k, v in bundle.items() if k not in ("preprocessor", "model")},
         indent=2,
@@ -106,7 +169,10 @@ def main(args):
     ))
 
     elapsed = time.perf_counter() - t0
-    print(f"Saved {out_file.relative_to(pathlib.Path.cwd())}  (total {elapsed:,.1f}s)")
+    try:
+        print(f"Saved {out_file.relative_to(pathlib.Path.cwd())}  (total {elapsed:,.1f}s)")
+    except ValueError:
+        print(f"Saved {out_file.resolve()}  (total {elapsed:,.1f}s)")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Train & bundle the XGB traffic model")
@@ -150,7 +216,11 @@ if __name__ == "__main__":
 
     p.add_argument("--horizon", type=int, default=15)
     p.add_argument("--filter-on-train-only", action="store_true")
+    
     p.add_argument("--use-gman-target", action="store_true")
+    p.add_argument("--no-use-gman-target", dest="use_gman_target", action="store_false")
+    p.set_defaults(use_gman_target=False)  # Optional: define the default
+    
     p.add_argument("--hour-start", type=int, default=6)
     p.add_argument("--hour-end", type=int, default=19)
     p.add_argument("--quantile-threshold", type=float, default=0.9)
@@ -184,3 +254,15 @@ if __name__ == "__main__":
 
     args = p.parse_args()
     main(args)
+    
+    
+#     python scripts/train_xgb.py \
+#   --file ../data/NDW/ndw_three_weeks.parquet \
+#   --filter-extreme-changes \
+#   --smooth-speeds \
+#   --normalize-by-distance \
+#   --relative-lags \
+#   --horizon 15 \
+#   --no-use-gman-target \
+#   --use-ts-split \
+#   --no-use-gpu
