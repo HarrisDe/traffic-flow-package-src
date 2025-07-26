@@ -36,6 +36,7 @@ class DateTimeFeatureEngineer(BaseFeatureTransformer):
         self.add_month = add_month
         self.add_weekend = add_weekend
         self.drop_original = drop_original
+        self.fitted_ = False
 
     def fit(self, X: pd.DataFrame, y=None):
         if self.datetime_col not in X.columns:
@@ -48,6 +49,7 @@ class DateTimeFeatureEngineer(BaseFeatureTransformer):
         if self.add_month: out.append("month")
         if self.add_weekend: out.extend(["is_saturday", "is_sunday"])
         self.feature_names_out_ = out
+        self.fitted_ = True
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -85,7 +87,7 @@ class DateTimeFeatureEngineer(BaseFeatureTransformer):
 
     @classmethod
     def from_state(cls, state: dict) -> "DateTimeFeatureEngineer":
-        return cls(
+        inst = cls(
             datetime_col=state["datetime_col"],
             add_hour=state["add_hour"],
             add_day=state["add_day"],
@@ -93,3 +95,5 @@ class DateTimeFeatureEngineer(BaseFeatureTransformer):
             add_weekend=state["add_weekend"],
             drop_original=state["drop_original"],
         )
+        inst.fitted_ = True
+        return inst
