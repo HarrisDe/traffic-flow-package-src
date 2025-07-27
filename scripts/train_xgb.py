@@ -9,8 +9,10 @@ from traffic_flow import (
     ModelTunerXGB,
     ModelEvaluator
 )
+from traffic_flow.utils.helper_utils import LoggingMixin
 from traffic_flow.constants.constants import (WEATHER_COLUMNS
 )
+
 
 def main(args):
     timestamp = datetime.now().strftime("%y%m%d")
@@ -100,21 +102,28 @@ def main(args):
     naive_metrics_std = results['naive_metrics_std']
     
     print("\n Model Evaluation Metrics")
-    print(json.dumps({
-        "metrics": metrics,
-        "metrics_std": metrics_std,
-        "naive_metrics": naive_metrics,
-        "naive_metrics_std": naive_metrics_std
-    }, indent=2))
-    
-    metrics_file = out_dir / "metrics.json"
-    metrics_file.write_text(json.dumps({
-        "metrics": metrics,
-        "metrics_std": metrics_std,
-        "naive_metrics": naive_metrics,
-        "naive_metrics_std": naive_metrics_std
-    }, indent=2))
-    
+    # Combine all metric dicts into a flat DataFrame
+    rows = []
+    for metric_type, metric_dict in {
+        "model": metrics,
+        "model_std": metrics_std,
+        "naive": naive_metrics,
+        "naive_std": naive_metrics_std
+    }.items():
+        for metric_name, metric_value in metric_dict.items():
+            rows.append({
+                "timestamp": timestamp,
+                "type": metric_type,
+                "metric": metric_name,
+                "value": float(metric_value)  # convert np.float32 safely
+            })
+
+    df_metrics = pd.DataFrame(rows)
+
+    # Save to CSV
+    metrics_csv_file = out_dir / f"{timestamp}_metrics_h-{args.horizon}.csv"
+    df_metrics.to_csv(metrics_csv_file, index=False)
+        
      # ----- Save raw predictions ---------------------------------
     time_axis = tdp.df.loc[tdp.df["test_set"],
                            ["date_of_prediction", "sensor_id"]]
@@ -157,8 +166,11 @@ def main(args):
 
     # out_dir = pathlib.Path(args.out_dir)
     # out_dir.mkdir(parents=True, exist_ok=True)
+    # Make 2 out files with the same content - one with the timestamp and one without
     out_file = out_dir / f"{timestamp}_traffic_pipeline_h-{args.horizon}.joblib"
+    out_file_2 = out_dir / f"traffic_pipeline_h-{args.horizon}.joblib"
     joblib.dump(bundle, out_file)
+    joblib.dump(bundle, out_file_2)
 
     # 4. save a lightweight JSON with just metrics / params (optional)
     meta_file = out_dir / f"{timestamp}_training_metadata.json"

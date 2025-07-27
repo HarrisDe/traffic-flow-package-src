@@ -2,7 +2,10 @@ constants
 data_loading
 evaluation
 features
+inference
 modeling
 pipeline
 post_processing
+preprocessing
+service
 utils
