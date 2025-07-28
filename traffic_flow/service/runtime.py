@@ -6,6 +6,10 @@ from typing import Dict, Any, Tuple
 from ..inference.inference_pipeline import TrafficInferencePipeline
 
 class InferenceRuntime:
+    """
+    Loads the artifact (model + states), rebuilds the inference pipeline,
+    and exposes predict_df() that returns (delta_predictions, engineered_features).
+    """
     def __init__(self, artifact_path: str):
         bundle: Dict[str, Any] = joblib.load(artifact_path)
         self.states       = bundle["states"]
@@ -19,5 +23,5 @@ class InferenceRuntime:
     def predict_df(self, df_raw: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame]:
         feats = self.pipeline.transform(df_raw)
         feats = feats.reindex(columns=self.feature_cols, copy=False)
-        preds = self.model.predict(feats)
-        return pd.Series(preds), feats
+        pred_delta = self.model.predict(feats)
+        return pd.Series(pred_delta), feats

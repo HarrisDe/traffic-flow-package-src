@@ -1,7 +1,7 @@
 # traffic_flow/inference/pipeline.py
 from __future__ import annotations
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # shared helpers
 from ..preprocessing.cleaning import (
