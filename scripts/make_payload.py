@@ -44,7 +44,11 @@ def main(total_rows = None):
     records = json.loads(sample.to_json(orient="records"))
     payload = {"records": records}
     #payload = {"records": sample.to_dict(orient="records")}
-    Path("payload.json").write_text(json.dumps(payload, indent=2))
+    output_dir = Path("outputs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "payload.json"
+    output_path.write_text(json.dumps(payload, indent = 2))
+    #Path("payload.json").write_text(json.dumps(payload, indent=2))
     print(f"Payload written with {len(records)} rows and columns: {sample.columns.tolist()}")
 
 if __name__ == "__main__":

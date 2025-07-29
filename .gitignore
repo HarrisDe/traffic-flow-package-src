@@ -49,6 +49,8 @@ changes.txt
 *.pkl
 *.joblib
 payload.json
+outputs/*
+!outputs/.gitkeep
 # -------------------------------
 # Other
 # -------------------------------
