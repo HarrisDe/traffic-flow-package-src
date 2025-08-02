@@ -16,6 +16,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 from time import time
 import pandas as pd
 from typing import Optional, Dict, Union
+from ..inference.prediction_protocol import make_prediction_frame
 
 
 
@@ -27,7 +28,8 @@ class ModelEvaluator:
     """
 
     def __init__(self, X_test, df_for_ML, y_train=None, y_test=None, rounding=2,
-                 discard_zero_mape=False, target_is_gman_error_prediction=True,
+                 discard_zero_mape=False, target_is_gman_error_prediction=False,
+                 sensor_col = 'sensor_id',date_col = 'date',value_col = 'value',
                  y_is_normalized=False, epsilon=1e-2):
         self.X_test = X_test
         self.df_for_ML = df_for_ML[df_for_ML['test_set']]
@@ -36,6 +38,10 @@ class ModelEvaluator:
         self.discard_zero_mape = discard_zero_mape
         self.target_is_gman_error_prediction = target_is_gman_error_prediction
         self.y_is_normalized = y_is_normalized
+        self.df_predictions = None
+        self.date_col = date_col
+        self.sensor_col = sensor_col
+        self.value_col = value_col
         self.epsilon = epsilon
 
         if self.y_is_normalized:
@@ -66,27 +72,31 @@ class ModelEvaluator:
     def reconstruct_y(self, y):
         if self.target_is_gman_error_prediction:
             return y + self.df_for_ML['gman_prediction_orig']
-        return y + self.X_test['value']
+        return y + self.X_test[self.value_col]
 
-    def smape(self, y_true, y_pred):
-        denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
-        smape = np.mean(np.abs(y_pred - y_true) /
-                        np.where(denominator == 0, 1, denominator))
-        smape_std = np.std(np.abs(y_pred - y_true) /
-                           np.where(denominator == 0, 1, denominator))
-        return smape * 100, smape_std * 100
 
     def smape(self, y_true, y_pred):
         denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
         smape_vals = np.abs(y_pred - y_true) / np.where(denominator == 0, 1, denominator)
         return np.mean(smape_vals) * 100, np.std(smape_vals) * 100
 
-    def evaluate_model_from_path(self, model_path, print_results=True):
+    def evaluate_model_from_path(self, model_path = None,saved_model = None, print_results=True):
         
-        
-        model = self.load_model_from_path(model_path)
+        if model_path is not None and saved_model is not None:
+            import warnings
+            warnings.warn("Both `model_path` and `saved_model` are provided. Using `saved_model` and ignoring `model_path`.")
+            model = saved_model
+        elif model_path is not None:
+            model = self.load_model_from_path(model_path)
+        else:
+            model = saved_model
+            
+        if model_path is not None:
+            model = self.load_model_from_path(model_path)
+        else:
+            model = saved_model
         time_start = time() # start measuring inference time after model is loaded to exclude model loading overhead time
-        if 'neural' in model_path.lower():
+        if model_path and 'neural' in model_path.lower():
             _, X_test_normalized = normalize_data(X_test=self.X_test)
             y_pred = model.predict(X_test_normalized).flatten()
         else:
@@ -98,8 +108,12 @@ class ModelEvaluator:
         self.y_pred_before_reconstruction = y_pred.copy()
         y_pred = self.reconstruct_y(y_pred)
         time_end = time()
+        self.df_predictions = self.df_for_ML[[self.date_col,self.sensor_col,'date_of_prediction',self.value_col,
+                                              'target_total_speed']]
+        self.df_predictions['y_pred'] = y_pred
         self.y_pred = y_pred
         inference_time = time_end - time_start
+        self.df_for_ML['y_pred'] = self.y_pred
         inference_time_per_sample = inference_time / len(self.X_test)
         abs_errors = np.abs(self.y_test - y_pred)
         mae = mean_absolute_error(self.y_test, y_pred)
@@ -107,7 +121,7 @@ class ModelEvaluator:
         rmse = mean_squared_error(self.y_test, y_pred, squared=False)
         smape, smape_std = self.smape(self.y_test, y_pred)
         naive_smape, naive_smape_std = self.smape(
-            self.y_test, self.X_test['value'])
+            self.y_test, self.X_test[self.value_col])
         
 
         if self.calculate_mape_with_handling_zero_values:
@@ -197,17 +211,86 @@ class ModelEvaluator:
             y_test = self.y_test[mask]
             y_pred = y_pred[mask]
             y_test_base = self.y_test_before_reconstruction[mask]
-            x_val = self.X_test[mask]['value']
+            x_val = self.X_test[mask][self.value_col]
         else:
             y_test = np.where(self.y_test == 0, self.epsilon, self.y_test)
             y_pred = y_pred
             y_test_base = np.where(self.y_test_before_reconstruction ==
                                    0, self.epsilon, self.y_test_before_reconstruction)
-            x_val = self.X_test['value']
+            x_val = self.X_test[self.value_col]
 
         ape = np.abs(y_test - y_pred) / np.abs(y_test)
         naive_ape = np.abs(y_test_base / (y_test_base + x_val))
 
         return np.mean(ape), np.std(ape), np.mean(naive_ape), np.std(naive_ape)
+    
+    
+    def to_canonical_predictions(
+        self,
+        *,
+        model=None,
+        model_path: Optional[str] = None,
+        states: Optional[dict] = None,
+        horizon_min: Optional[int] = None,
+        add_total: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Produce the canonical prediction DataFrame for the *test* split using the
+        evaluator's X_test and df_for_ML (which is already filtered to test_set).
+
+        Returns columns:
+        sensor_id, input_time, prediction_time, y_pred_delta, y_pred_total, horizon
+        """
+        # 1) Get model
+        if model is None and model_path is not None:
+            model = self.load_model_from_path(model_path)
+        if model is None:
+            raise ValueError("Provide a model or model_path.")
+
+        # 2) Predict deltas on X_test
+        y_pred_delta = model.predict(self.X_test)
+
+        # 3) Build a minimal RAW-like frame aligned to X_test rows
+        df_test = self.df_for_ML.copy()   # already test_set only
+        # input_time for the row; if 'date' is missing, reconstruct from date_of_prediction - horizon
+        if self.date_col in df_test.columns:
+            raw_date = df_test[self.date_col].copy()
+        else:
+            if horizon_min is None:
+                raise ValueError("horizon_min is required if 'date' is not present in df_for_ML.")
+            raw_date = pd.to_datetime(df_test["date_of_prediction"]) - pd.to_timedelta(horizon_min, unit="m")
+
+        df_raw_min = pd.DataFrame({
+            self.sensor_col: df_test[self.sensor_col],
+            self.date_col: pd.to_datetime(raw_date, errors="coerce"),
+            self.value_col: self.X_test[self.value_col].to_numpy(dtype=float),
+            'target_total_speed': df_test['target_total_speed']
+        }, index=self.X_test.index)
+
+        # 4) Infer horizon if not provided
+        if horizon_min is None:
+            if "date_of_prediction" in df_test.columns and self.date_col in df_test.columns:
+                delta = pd.to_datetime(df_test["date_of_prediction"]) - pd.to_datetime(df_test[self.date_col])
+                horizon_min = int(round(delta.dt.total_seconds().median() / 60.0))
+            else:
+                # reasonable fallback
+                horizon_min = 15
+                warnings.warn("Neither horizon_min nor the required column to calculate the horizon manually(date_of_prediction) is provided. Assuming horizon is 15 minutes.")
+
+        if states is None:
+            raise ValueError("states (from tdp.export_states()) must be provided.")
+        print(f"df_raw_min_cols: {df_raw_min.columns}")
+        # 5) Canonical frame
+        pred_df = make_prediction_frame(
+            df=df_raw_min.rename(columns={self.date_col: "date"}),  # column name expected by states
+            feats=self.X_test,
+            pred_delta=y_pred_delta,
+            states=states,
+            horizon_min=horizon_min,
+            add_total=add_total,
+            sensor_col=self.sensor_col,
+            add_y_act=True
+        )
+        return pred_df
     
     

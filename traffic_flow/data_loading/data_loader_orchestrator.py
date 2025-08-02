@@ -139,6 +139,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
 
         self.df["test_set"] = self.df[self.datetime_col] >= split_time
         self.first_test_timestamp = split_time
+        self.last_test_timestamp = self.df.loc[self.df['test_set'],self.datetime_col].max()
 
     # ------------------------------------------------------------------ #
     # Public method

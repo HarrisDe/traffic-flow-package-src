@@ -67,7 +67,6 @@ class TargetVariableCreator(BaseFeatureTransformer):
         if not self.fitted_:
             raise RuntimeError("Call fit() first.")
         self._log("Creating target variables.")
-        df = df.sort_values(by=[self.sensor_col, self.datetime_col]).copy()
 
         # Basic target: raw speed + delta
         df['target_total_speed'] = df.groupby(self.sensor_col)[self.value_col].shift(-self.horizon)
@@ -90,6 +89,8 @@ class TargetVariableCreator(BaseFeatureTransformer):
         df = df.dropna(subset=['target'])
         self._log(f"Final target column ready. {df.shape[0]} rows retained after dropping NaNs.")
         self.feature_names_out_ = used_cols
+        
+
         return df
     
         # ------------------------ persistence ----------------------------
