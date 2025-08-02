@@ -53,7 +53,8 @@ def main(args):
         quantile_percentage=args.quantile_percentage,
         lower_bound=args.lower_bound,
         upper_bound=args.upper_bound,
-        previous_weekday_window_min  = args.previous_weekday_window_min
+        previous_weekday_window_min  = args.previous_weekday_window_min,
+        add_previous_weekday_feature=args.add_previous_weekday_feature, 
     )
     
     print(f"X_train columns: {X_train.columns.tolist()}")
@@ -263,6 +264,14 @@ if __name__ == "__main__":
     p.add_argument("--suppress-output", action="store_true")
     p.add_argument("--n-jobs", type=int, default=-1)
     p.add_argument("--previous-weekday-window-min", type=int, default=0)
+    
+    p.add_argument("--add-previous-weekday-feature", action="store_true",
+               help="Include previous weekday window feature(s).")
+    p.add_argument("--no-add-previous-weekday-feature",
+                dest="add_previous_weekday_feature",
+                action="store_false",
+                help="Disable previous weekday window feature(s).")
+    p.set_defaults(add_previous_weekday_feature=True)
 
     args = p.parse_args()
     main(args)
