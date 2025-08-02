@@ -28,53 +28,74 @@ def create_app(artifact_path: str | None = None) -> Flask:
             "features": rt.feature_cols,
         }), 200
 
+    # @app.post("/predict")
+    # def predict():
+    #     """
+    #     Expects JSON:
+    #     {
+    #       "records": [
+    #         {"sensor_id": "...", "date":"YYYY-MM-DD HH:MM:SS", "value": 83.0, ...},
+    #         ...
+    #       ]
+    #     }
+    #     Returns JSON with rows including: sensor_id, date, prediction_time, y_pred_delta, y_pred_total.
+    #     """
+    #     payload = request.get_json(force=True)
+    #     if not payload or "records" not in payload:
+    #         return jsonify({"error": "Payload must include 'records' list"}), 400
+
+    #     raw_df = pd.DataFrame(payload["records"])
+    #     needed = ("sensor_id", "date", "value")
+    #     missing = [c for c in needed if c not in raw_df.columns]
+    #     if missing:
+    #         return jsonify({"error": f"Missing columns: {missing}"}), 400
+
+    #     # 1) Feature engineering + model delta predictions
+    #     pred_delta, feats = rt.predict_df(raw_df)   # <- delta only
+
+    #     # 2) Add baseline (current value) to get total speed
+    #     if "value" not in feats.columns:
+    #         return jsonify({"error": "The engineered features are missing 'value' column."}), 500
+    #     pred_total = (pred_delta + feats["value"].to_numpy()).astype(float)
+
+    #     # 3) Attach timestamps & ids for plotting/verification
+    #     dt_col = rt.states["datetime_state"]["datetime_col"]  # usually "date"
+    #     dt_in = pd.to_datetime(raw_df[dt_col], errors="coerce")
+    #     dt_pred = dt_in + pd.to_timedelta(rt.horizon, unit="m")
+
+    #     out = pd.DataFrame({
+    #         "sensor_id": raw_df.get("sensor_id", None),
+    #         dt_col: dt_in.dt.strftime("%Y-%m-%d %H:%M:%S"),
+    #         "prediction_time": dt_pred.dt.strftime("%Y-%m-%d %H:%M:%S"),
+    #         "y_pred_delta": pred_delta.astype(float),
+    #         "y_pred_total": pred_total,
+    #     })
+
+    #     return jsonify({
+    #         "horizon": rt.horizon,
+    #         "n": int(len(out)),
+    #         "predictions": out.to_dict(orient="records")
+    #     }), 200
+
+    # return app
+
     @app.post("/predict")
     def predict():
-        """
-        Expects JSON:
-        {
-          "records": [
-            {"sensor_id": "...", "date":"YYYY-MM-DD HH:MM:SS", "value": 83.0, ...},
-            ...
-          ]
-        }
-        Returns JSON with rows including: sensor_id, date, prediction_time, y_pred_delta, y_pred_total.
-        """
         payload = request.get_json(force=True)
         if not payload or "records" not in payload:
             return jsonify({"error": "Payload must include 'records' list"}), 400
 
-        raw_df = pd.DataFrame(payload["records"])
-        needed = ("sensor_id", "date", "value")
-        missing = [c for c in needed if c not in raw_df.columns]
-        if missing:
-            return jsonify({"error": f"Missing columns: {missing}"}), 400
+        df_raw = pd.DataFrame(payload["records"])
+        # minimal validation
+        for c in ("sensor_id", "date", "value"):
+            if c not in df_raw.columns:
+                return jsonify({"error": f"Missing column: {c}"}), 400
 
-        # 1) Feature engineering + model delta predictions
-        pred_delta, feats = rt.predict_df(raw_df)   # <- delta only
-
-        # 2) Add baseline (current value) to get total speed
-        if "value" not in feats.columns:
-            return jsonify({"error": "The engineered features are missing 'value' column."}), 500
-        pred_total = (pred_delta + feats["value"].to_numpy()).astype(float)
-
-        # 3) Attach timestamps & ids for plotting/verification
-        dt_col = rt.states["datetime_state"]["datetime_col"]  # usually "date"
-        dt_in = pd.to_datetime(raw_df[dt_col], errors="coerce")
-        dt_pred = dt_in + pd.to_timedelta(rt.horizon, unit="m")
-
-        out = pd.DataFrame({
-            "sensor_id": raw_df.get("sensor_id", None),
-            dt_col: dt_in.dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "prediction_time": dt_pred.dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "y_pred_delta": pred_delta.astype(float),
-            "y_pred_total": pred_total,
-        })
-
+        pred_df, _ = rt.predict_df(df_raw)
         return jsonify({
             "horizon": rt.horizon,
-            "n": int(len(out)),
-            "predictions": out.to_dict(orient="records")
+            "n": int(len(pred_df)),
+            "predictions": pred_df.to_dict(orient="records")
         }), 200
 
     return app

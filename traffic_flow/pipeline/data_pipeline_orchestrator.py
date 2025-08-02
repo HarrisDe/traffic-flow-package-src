@@ -166,9 +166,11 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             test_start_time=test_start_time,
             diagnose_extreme_changes=diagnose_extreme_changes,
         )
+        df.sort_values(by=[self.datetime_col,self.sensor_col],inplace=True)
         self.df_orig = loader.df_orig
         self.df_orig_smoothed = loader.df_orig_smoothed
         self.first_test_timestamp = loader.first_test_timestamp
+        self.last_test_timestamp = loader.last_test_timestamp
         df.attrs["smoothing_id"] = self.smoothing_id
         self.clean_state = {
             "relative_threshold": relative_threshold,
@@ -282,8 +284,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         drop_weather: bool = True,
         use_gman_target: bool = False,
         drop_missing_gman_rows: bool = False,
-        drop_datetime: bool = True
-    ):
+        drop_datetime: bool = True,
+        drop_sensor_id: bool = True
+    ):  
+        
+        if drop_datetime or drop_sensor_id:
+            warnings.warn(f"[finalize_for_horizon] drop_datetime feature value is: {drop_datetime},\
+                          drop_sensor_id value is: {drop_sensor_id}. These columns both \
+                              must not exist when training the model, either drop them before training or \
+                                  rerun TrafficDataPipelineOrchestrator with both set to True (their default values).")
         if not self.base_features_prepared:
             raise RuntimeError("Call prepare_base_features() first.")
 
@@ -364,14 +373,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.dtype_schema = dtype_schema
 
         # --- split -----------------------------------------------------
+        self.df = df
+        self.df.sort_values(by=[self.datetime_col,self.sensor_col],inplace=True)
         train_df = df[~df["test_set"]].copy()
         test_df = df[df["test_set"]].copy()
-
+        
         X_train, y_train = train_df.drop(columns=["target"]), train_df["target"]
         X_test, y_test = test_df.drop(columns=["target"]), test_df["target"]
 
         cols_to_drop: List[str] = [
-            "sensor_id",
             "target_total_speed",
             "target_speed_delta",
             "test_set",
@@ -382,12 +392,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         if drop_datetime:
             cols_to_drop.append(self.datetime_col)
         
+        if drop_sensor_id:
+            cols_to_drop.append(self.sensor_col)
+        
         for subset in (X_train, X_test):
             subset.drop(
                 columns=[c for c in cols_to_drop if c in subset.columns], inplace=True
             )
 
-        self.df = df
+        
         self.X_train, self.X_test, self.y_train, self.y_test = (
             X_train,
             X_test,
@@ -434,10 +447,11 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         previous_weekday_window_min: int = 0,
         use_gman_target: bool = False,
         drop_missing_gman_rows = False,
-        drop_datetime = True
+        drop_datetime = True,
+        drop_sensor_id = True
     ):
 
-        # 1) heavy part
+        # 1) core part
         self.prepare_base_features(
             test_size=test_size,
             test_start_time=test_start_time,
@@ -461,7 +475,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             use_median_instead_of_mean_smoothing=use_median_instead_of_mean_smoothing,
         )
 
-        # 2) horizon-specific augmentation
+        # 2) horizon-specific features
         return self.finalise_for_horizon(
             horizon=horizon,
             df_gman=self.df_gman_legacy if add_gman_predictions else None,
@@ -471,7 +485,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             previous_weekday_window_min=previous_weekday_window_min,
             use_gman_target=use_gman_target,
             drop_missing_gman_rows=drop_missing_gman_rows,
-            drop_datetime=drop_datetime
+            drop_datetime=drop_datetime,
+            drop_sensor_id= drop_sensor_id
         )
     
     def export_states(self) -> dict:

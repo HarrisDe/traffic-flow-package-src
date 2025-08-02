@@ -20,100 +20,8 @@ from ..features.congestion_outlier_features  import GlobalOutlierFlagger
 from ..features.historical_reference_features import PreviousWeekdayWindowFeatureEngineer
 from ..features.misc_features      import WeatherFeatureDropper
 from ..preprocessing.dtypes import enforce_dtypes
+from .prediction_protocol import make_prediction_frame
 
-# class TrafficInferencePipeline:
-#     """
-#     Stateless, *read-only* version of TrafficDataPipelineOrchestrator.
-#     Construct it with the dict returned by `export_states()` and call
-#     `.transform(raw_df)` to obtain the model-ready feature frame.
-#     """
-
-#     # --------------------------------------------------------------
-#     def __init__(self, states: Dict[str, Any]) -> None:
-#         self.states = states
-
-#         # rebuild feature transformers -----------------------------
-#         sen_state  = states["sensor_encoder_state"]
-#         if sen_state["type"] == "ordinal":
-#             self.sensor_enc = OrdinalSensorEncoder.from_state(sen_state)
-#         else:
-#             self.sensor_enc = MeanSensorEncoder.from_state(sen_state)
-
-#         self.dt_fe       = DateTimeFeatureEngineer.from_state(states["datetime_state"])
-#         self.adj_fe      = AdjacentSensorFeatureAdder.from_state(states["adjacency_state"])
-#         self.lag_fe      = TemporalLagFeatureAdder.from_state(states["lag_state"])
-#         self.cong_flag   = PerSensorCongestionFlagger.from_state(states["congestion_state"])
-#         self.outlier_flag= GlobalOutlierFlagger.from_state(states["outlier_state"])
-#         self.weather_drop= WeatherFeatureDropper.from_state(states["weather_state"])
-#         self.prev_day_fe = PreviousWeekdayWindowFeatureEngineer.from_state(states["previous_day_state"])
-
-#         # meta ------------------------------------------------------
-#         self.clean_cfg    = states["clean_state"]
-#         self.expected_cols: List[str] = states["feature_cols"]
-
-#     # --------------------------------------------------------------
-#     def transform(self, df_raw: pd.DataFrame) -> pd.DataFrame:
-#         """
-#         Parameters
-#         ----------
-#         df_raw : pd.DataFrame
-#             New data in the SAME schema as the original raw parquet
-#             (sensor_id, date, value, …).
-
-#         Returns
-#         -------
-#         df_feats : pd.DataFrame
-#             Exactly the columns the XGB model expects (order preserved).
-#         """
-#         cfg = self.clean_cfg
-
-#         # ---------- 1. replicate cleaning -------------------------
-#         df = clean_and_cast(df_raw, value_col="value")
-#         df = filter_and_interpolate_extremes(
-#                 df,
-#                 sensor_col="sensor_id",
-#                 value_col="value",
-#                 threshold=cfg["relative_threshold"],
-#         )
-#         df = smooth_speeds(
-#                 df,
-#                 sensor_col="sensor_id",
-#                 value_col="value",
-#                 window_size=cfg["smoothing_window"],
-#                 use_median=cfg["use_median"],
-#         )
-
-#         # ---------- 2. feature stack (same order as training) -----
-#         df = self.sensor_enc.transform(df)
-#         df = self.dt_fe.transform(df)
-#         df = self.adj_fe.transform(df)
-#         df = self.lag_fe.transform(df)
-#         df = self.cong_flag.transform(df)
-#         df = self.outlier_flag.transform(df)
-#         df = self.weather_drop.transform(df)
-#         if self.prev_day_fe is not None:
-#             df = self.prev_day_fe.transform(df)
-
-#         # ---------- 3. final column alignment ---------------------
-#         # Reindex guarantees *order* and drops any accidental extras
-#         df_final = df.reindex(columns=self.expected_cols, copy=False)
-
-#         # Safety check in case upstream data is missing sensors, etc.
-#         missing = df_final.columns[df_final.isna().all()]
-#         if len(missing):
-#             df_final[missing] = 0.0          # or any sentinel you prefer
-
-#         return self._canonical_sort(df_final)
-    
-    
-#     # -----------------------------------------------------------
-    # def _canonical_sort(self, df: pd.DataFrame) -> pd.DataFrame:
-    #     """Match the sort order used during training."""
-    #     return (
-    #         df.sort_values([self.states["datetime_state"]["datetime_col"],
-    #                         "sensor_uid"])          # after encoding
-    #         .reset_index(drop=True)
-    #      )
         
 class TrafficInferencePipeline:
     """
@@ -193,9 +101,9 @@ class TrafficInferencePipeline:
         # ---------- 2.5) canonical row order -----------------------
         # Match the training sort order (by datetime then encoded sensor).
         # Sort BEFORE column reindex so we still have dt column available.
-        sort_cols = [c for c in (self.dt_col, "sensor_uid") if c in df.columns]
-        if sort_cols:
-            df = df.sort_values(sort_cols).reset_index(drop=True)
+        # sort_cols = [c for c in (self.dt_col, "sensor_uid") if c in df.columns]
+        # if sort_cols:
+        #     df = df.sort_values(sort_cols).reset_index(drop=True)
 
         # ---------- 3) final column alignment & dtypes -------------
         df_final = df.reindex(columns=self.expected_cols, copy=False)
@@ -215,112 +123,34 @@ class TrafficInferencePipeline:
             df_final[missing] = 0
 
         return df_final
+    
+   
+    def predict(
+        self,
+        df_raw: pd.DataFrame,
+        model,
+        *,
+        horizon_min: Optional[int] = None,
+        add_total: bool = True,
+        sensor_col: str = "sensor_id",
+    ) -> pd.DataFrame:
+        """
+        Run transform + model.predict and return the canonical prediction frame.
+        """
+        feats = self.transform(df_raw)
+        feats = feats.reindex(columns=self.expected_cols, copy=False)
+        pred_delta = model.predict(feats)
+        # infer horizon from saved states if not passed
+        if horizon_min is None:
+            # try target_state (depends on your export)
+            horizon_min = int(self.states.get("target_state", {}).get("horizon_min", 15))
+        return make_prediction_frame(
+            df_raw=df_raw,
+            feats=feats,
+            pred_delta=pred_delta,
+            states=self.states,
+            horizon_min=horizon_min,
+            add_total=add_total,
+            sensor_col=sensor_col,
+        ) 
 
-#
-
-# class TrafficInferencePipeline:
-#     """
-#     Stateless, read-only replica of *TrafficDataPipelineOrchestrator*.
-
-#     Parameters
-#     ----------
-#     states : dict
-#         The dictionary returned by `TrafficDataPipelineOrchestrator.export_states()`.
-#     keep_datetime : bool, default ``False``
-#         If *True* the original datetime column is kept in the returned frame
-#         (handy for debugging / A–B checks).  
-#         If *False* it is dropped so the output contains **exactly** the columns
-#         used by the model.
-#     """
-
-#     # ----------------------------------------------------------
-#     def __init__(self, states: Dict[str, Any], *, keep_datetime: bool = False) -> None:
-#         self.states        = states
-#         self.keep_datetime = keep_datetime
-
-#         # ── rebuild transformers ───────────────────────────────
-#         sen_state = states["sensor_encoder_state"]
-#         self.sensor_enc = (
-#             OrdinalSensorEncoder.from_state(sen_state)
-#             if sen_state["type"] == "ordinal"
-#             else MeanSensorEncoder.from_state(sen_state)
-#         )
-
-#         self.dt_fe        = DateTimeFeatureEngineer.from_state(states["datetime_state"])
-#         self.adj_fe       = AdjacentSensorFeatureAdder.from_state(states["adjacency_state"])
-#         self.lag_fe       = TemporalLagFeatureAdder.from_state(states["lag_state"])
-#         self.cong_flag    = PerSensorCongestionFlagger.from_state(states["congestion_state"])
-#         self.outlier_flag = GlobalOutlierFlagger.from_state(states["outlier_state"])
-#         self.weather_drop = WeatherFeatureDropper.from_state(states["weather_state"])
-#         self.prev_day_fe  = PreviousWeekdayWindowFeatureEngineer.from_state(
-#             states["previous_day_state"]
-#         )
-
-#         # ── meta ───────────────────────────────────────────────
-#         self.clean_cfg      = states["clean_state"]
-#         self.expected_cols: List[str] = states["feature_cols"]
-#         self.dt_col         = self.dt_fe.datetime_col
-
-#     # ----------------------------------------------------------
-#     def transform(self, df_raw: pd.DataFrame) -> pd.DataFrame:
-#         cfg = self.clean_cfg
-
-#         # 1. replicate cleaning --------------------------------
-#         df = clean_and_cast(df_raw, value_col="value")
-#         df = filter_and_interpolate_extremes(
-#             df,
-#             sensor_col="sensor_id",
-#             value_col="value",
-#             threshold=cfg["relative_threshold"],
-#         )
-#         df = smooth_speeds(
-#             df,
-#             sensor_col="sensor_id",
-#             value_col="value",
-#             window_size=cfg["smoothing_window"],
-#             use_median=cfg["use_median"],
-#         )
-
-#         # 2. feature stack (same order as training) ------------
-#         df = self.sensor_enc.transform(df)
-#         df = self.dt_fe.transform(df)
-#         df = self.adj_fe.transform(df)
-#         df = self.lag_fe.transform(df)
-#         df = self.cong_flag.transform(df)
-#         df = self.outlier_flag.transform(df)
-#         df = self.weather_drop.transform(df)
-#         if self.prev_day_fe is not None:
-#             df = self.prev_day_fe.transform(df)
-
-#         # 3. canonical sort (match training order) -------------
-#         df = self._canonical_sort(df)
-
-#         # 4. drop / keep datetime ------------------------------
-#         dt_series = None
-#         if not self.keep_datetime and self.dt_col in df.columns:
-#             df = df.drop(columns=[self.dt_col])
-#         elif self.keep_datetime:
-#             # stash a copy because reindex will discard it
-#             dt_series = df[self.dt_col]
-
-#         # 5. definitive column order ---------------------------
-#         df_final = df.reindex(columns=self.expected_cols, copy=False)
-
-#         # optionally put datetime back as the first column
-#         if self.keep_datetime:
-#             df_final.insert(0, self.dt_col, dt_series)
-
-#         # fill any all-NaN columns (e.g. unseen sensors)
-#         missing = df_final.columns[df_final.isna().all()]
-#         if len(missing):
-#             df_final[missing] = 0.0
-
-#         return df_final
-
-#     # ----------------------------------------------------------
-#     def _canonical_sort(self, df: pd.DataFrame) -> pd.DataFrame:
-#         """Impose the `(datetime, sensor_uid)` order used during training."""
-#         return (
-#             df.sort_values([self.dt_col, "sensor_uid"])
-#               .reset_index(drop=True)
-#         )
