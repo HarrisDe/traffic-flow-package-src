@@ -54,6 +54,6 @@ def make_prediction_frame(
     
     if add_y_act:
         if target_col not in df.columns:
-            raise ValueError("Cannot compute y_pred_total (missing 'target_total_speed' in features).")
+            raise ValueError("Cannot compute y_act_total (missing 'target_total_speed' in features).")
         out["y_act_total"] = df[target_col].to_numpy(dtype=float)
     return out

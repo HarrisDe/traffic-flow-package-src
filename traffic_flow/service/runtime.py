@@ -46,7 +46,7 @@ class InferenceRuntime:
             horizon_min=self.horizon,
             add_total=True,
             sensor_col="sensor_id",
-            add_y_act=True
+            add_y_act=False
             
         )
         return pred_df, feats
