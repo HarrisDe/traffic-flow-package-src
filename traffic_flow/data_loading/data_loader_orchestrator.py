@@ -178,7 +178,18 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
                 )
             )
         if filter_extreme_changes:
-            self.filter_extreme_changes(relative_threshold=relative_threshold)
+            if filter_on_train_only and "test_set" in self.df.columns:
+                mask = ~self.df['tesst_set']
+                self.df.loc[mask] = filter_and_interpolate_extremes(
+                    self.df.loc[mask], sensor_col=self.sensor_col,
+                    value_col=self.value_col, threshold=relative_threshold
+                )
+            else:
+                self.df = filter_and_interpolate_extremes(
+                self.df, sensor_col=self.sensor_col,
+                value_col=self.value_col, threshold=relative_threshold
+                )
+                #self.filter_extreme_changes(relative_threshold=relative_threshold)
         if smooth_speeds:
             self.smooth_speeds(
                 window_size=window_size,
@@ -220,41 +231,16 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         self.df.drop(columns=[tmp], inplace=True)
         return mask
 
-    def filter_extreme_changes(self, *, relative_threshold: float = 0.7) -> None:
-        assert self.df is not None
-        self.df = filter_and_interpolate_extremes(
-        self.df,
-        sensor_col=self.sensor_col,
-        value_col=self.value_col,
-        threshold=relative_threshold,
-    )
-
-    # def smooth_speeds(
-    #     self,
-    #     *,
-    #     window_size: int = 5,
-    #     filter_on_train_only: bool = True,
-    #     use_median_instead_of_mean: bool = True,
-    # ) -> None:
+    # def filter_extreme_changes(self, *, relative_threshold: float = 0.7) -> None:
     #     assert self.df is not None
-    #     if filter_on_train_only and "test_set" in self.df.columns:
-    #         mask = ~self.df["test_set"]
-    #         smoothed_part = smooth_speeds(
-    #             self.df.loc[mask],
-    #             sensor_col=self.sensor_col,
-    #             value_col=self.value_col,
-    #             window_size=window_size,
-    #             use_median=use_median_instead_of_mean,
-    #         )
-    #         self.df.loc[mask] = smoothed_part
-    #     else:
-    #         self.df = smooth_speeds(
-    #             self.df,
-    #             sensor_col=self.sensor_col,
-    #             value_col=self.value_col,
-    #             window_size=window_size,
-    #             use_median=use_median_instead_of_mean,
-    #         )
+    #     self.df = filter_and_interpolate_extremes(
+    #     self.df,
+    #     sensor_col=self.sensor_col,
+    #     value_col=self.value_col,
+    #     threshold=relative_threshold,
+    # )
+
+
     
     def smooth_speeds(
         self,

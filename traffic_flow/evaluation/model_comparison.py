@@ -282,7 +282,7 @@ class ModelEvaluator:
         print(f"df_raw_min_cols: {df_raw_min.columns}")
         # 5) Canonical frame
         pred_df = make_prediction_frame(
-            df=df_raw_min.rename(columns={self.date_col: "date"}),  # column name expected by states
+            df=self.df_for_ML.rename(columns={self.date_col: "date"}),  # column name expected by states
             feats=self.X_test,
             pred_delta=y_pred_delta,
             states=states,

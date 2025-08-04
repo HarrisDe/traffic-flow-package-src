@@ -21,9 +21,9 @@ from ..features.historical_reference_features import PreviousWeekdayWindowFeatur
 from ..features.misc_features      import WeatherFeatureDropper
 from ..preprocessing.dtypes import enforce_dtypes
 from .prediction_protocol import make_prediction_frame
-
+from ..utils.helper_utils import LoggingMixin
         
-class TrafficInferencePipeline:
+class TrafficInferencePipeline(LoggingMixin):
     """
     Stateless, read-only pipeline built from the dict returned by
     TrafficDataPipelineOrchestrator.export_states().
@@ -37,10 +37,17 @@ class TrafficInferencePipeline:
         debugging/equality checks (even if it was dropped during training).
     """
 
-    def __init__(self, states: Dict[str, Any], keep_datetime: bool = False) -> None:
+    def __init__(self, states: Dict[str, Any], 
+                 keep_datetime: bool = False,
+                 disable_logs: bool = False,) -> None:
+        super().__init__(disable_logs=disable_logs)
         self.states = states
         self.keep_datetime = keep_datetime
-
+        schema = states.get("schema_state", {})
+        self.sensor_col   = schema.get("sensor_col", "sensor_id")
+        self.datetime_col = schema.get("datetime_col", states["datetime_state"]["datetime_col"])
+        self.value_col    = schema.get("value_col", "value")
+        self.row_order    = schema.get("row_order", [self.datetime_col, self.sensor_col])
         # --- rebuild transformers ---------------------------------
         sen_state = states["sensor_encoder_state"]
         if sen_state["type"] == "ordinal":
@@ -66,7 +73,7 @@ class TrafficInferencePipeline:
         self.clean_cfg: Dict[str, Any] = states["clean_state"]
         self.expected_cols: List[str]   = states["feature_cols"]
         self.dtype_schema: Dict[str, str] = states.get("dtype_schema", {})
-        self.dt_col: str = states["datetime_state"]["datetime_col"]
+  
 
     # --------------------------------------------------------------
     def transform(self, df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -74,18 +81,39 @@ class TrafficInferencePipeline:
         Transform raw data (same schema as training raw) into the
         model-ready feature matrix with the exact column order and dtypes.
         """
+        
+        # order = self.states.get("row_order", [self.dt_col, "sensor_id"])
+        # present = [c for c in order if c in df.columns]
+        # df = df.sort_values(present, kind="mergesort").reset_index(drop=True)
+        
         cfg = self.clean_cfg
+        
 
         # ---------- 1) replicate cleaning --------------------------
-        df = clean_and_cast(df_raw, value_col="value")
+        df = clean_and_cast(df_raw, value_col=self.value_col)
         df = filter_and_interpolate_extremes(
-            df, sensor_col="sensor_id", value_col="value",
+            df, sensor_col=self.sensor_col, value_col=self.value_col,
             threshold=cfg["relative_threshold"],
         )
-        df = smooth_speeds(
-            df, sensor_col="sensor_id", value_col="value",
-            window_size=cfg["smoothing_window"], use_median=cfg["use_median"],
-        )
+
+        if cfg.get("smooth_speeds", True):
+            df = smooth_speeds(df, sensor_col="sensor_id", value_col="value",
+                            window_size=cfg["smoothing_window"],
+                            use_median=cfg["use_median"])
+        
+        
+        # Apply extreme-change filtering only if the training test-path had it.
+        # If training used filter_on_train_only=True, test rows were NOT filtered,
+        # so do NOT filter at inference either:
+        # if cfg.get("filter_extreme_changes", True) and not cfg.get("filter_on_train_only", False):
+        #     df = filter_and_interpolate_extremes(
+        #         df, sensor_col="sensor_id", value_col="value",
+        #         threshold=cfg["relative_threshold"])
+        
+   
+        present = [c for c in self.row_order if c in df.columns]
+        if present:
+            df = df.sort_values(present, kind="mergesort").reset_index(drop=True)
 
         # ---------- 2) feature stack (same order as training) ------
         df = self.sensor_enc.transform(df)
@@ -98,12 +126,7 @@ class TrafficInferencePipeline:
         if self.prev_day_fe is not None:
             df = self.prev_day_fe.transform(df)
 
-        # ---------- 2.5) canonical row order -----------------------
-        # Match the training sort order (by datetime then encoded sensor).
-        # Sort BEFORE column reindex so we still have dt column available.
-        # sort_cols = [c for c in (self.dt_col, "sensor_uid") if c in df.columns]
-        # if sort_cols:
-        #     df = df.sort_values(sort_cols).reset_index(drop=True)
+ 
 
         # ---------- 3) final column alignment & dtypes -------------
         df_final = df.reindex(columns=self.expected_cols, copy=False)
@@ -113,44 +136,50 @@ class TrafficInferencePipeline:
             df_final = enforce_dtypes(df_final, self.dtype_schema)
 
         # Optionally re-attach datetime column for debugging/equality checks
-        if self.keep_datetime and self.dt_col not in df_final.columns and self.dt_col in df.columns:
+        if self.keep_datetime and self.datetime_col not in df_final.columns and self.datetime_col in df.columns:
             # put it first for convenience
-            df_final.insert(0, self.dt_col, df[self.dt_col].values)
+            df_final.insert(0, self.datetime_col, df[self.datetime_col].values)
+            df_final.insert(1, self.sensor_col, df[self.sensor_col].values)
+        
+        if not self.keep_datetime and self.datetime_col in df_final.columns:
+            # drop it if not needed
+            df_final = df_final.drop(columns=[self.datetime_col,self.sensor_col])
 
         # Safety: fill any all-null columns (shouldn't happen normally)
         missing = df_final.columns[df_final.isna().all()]
         if len(missing):
+            print(f"Warning: {len(missing)} columns missing in final output, filling with 0s: {missing.tolist()}")
             df_final[missing] = 0
 
         return df_final
     
    
-    def predict(
-        self,
-        df_raw: pd.DataFrame,
-        model,
-        *,
-        horizon_min: Optional[int] = None,
-        add_total: bool = True,
-        sensor_col: str = "sensor_id",
-    ) -> pd.DataFrame:
-        """
-        Run transform + model.predict and return the canonical prediction frame.
-        """
-        feats = self.transform(df_raw)
-        feats = feats.reindex(columns=self.expected_cols, copy=False)
-        pred_delta = model.predict(feats)
-        # infer horizon from saved states if not passed
-        if horizon_min is None:
-            # try target_state (depends on your export)
-            horizon_min = int(self.states.get("target_state", {}).get("horizon_min", 15))
-        return make_prediction_frame(
-            df_raw=df_raw,
-            feats=feats,
-            pred_delta=pred_delta,
-            states=self.states,
-            horizon_min=horizon_min,
-            add_total=add_total,
-            sensor_col=sensor_col,
-        ) 
+    # def predict(
+    #     self,
+    #     df_raw: pd.DataFrame,
+    #     model,
+    #     *,
+    #     horizon_min: Optional[int] = None,
+    #     add_total: bool = True,
+    #     sensor_col: str = "sensor_id",
+    # ) -> pd.DataFrame:
+    #     """
+    #     Run transform + model.predict and return the canonical prediction frame.
+    #     """
+    #     feats = self.transform(df_raw)
+    #     feats = feats.reindex(columns=self.expected_cols, copy=False)
+    #     pred_delta = model.predict(feats)
+    #     # infer horizon from saved states if not passed
+    #     if horizon_min is None:
+    #         # try target_state (depends on your export)
+    #         horizon_min = int(self.states.get("target_state", {}).get("horizon_min", 15))
+    #     return make_prediction_frame(
+    #         df_raw=df_raw,
+    #         feats=feats,
+    #         pred_delta=pred_delta,
+    #         states=self.states,
+    #         horizon_min=horizon_min,
+    #         add_total=add_total,
+    #         sensor_col=sensor_col,
+    #     ) 
 

@@ -27,6 +27,9 @@ class TargetVariableCreator(BaseFeatureTransformer):
         value_col: str = 'value',
         gman_col: str = 'gman_prediction_orig',
         use_gman: bool = False,
+        target_col: str = 'target',
+        target_total_speeed_col: str = 'target_total_speed',
+        target_delta_speed_col: str = 'target_speed_delta',
         disable_logs: bool = False
     ):
         super().__init__(disable_logs)
@@ -36,12 +39,15 @@ class TargetVariableCreator(BaseFeatureTransformer):
         self.value_col = value_col
         self.gman_col = gman_col
         self.use_gman = use_gman
+        self.target_col = target_col
+        self.target_total_speed_col = target_total_speeed_col
+        self.target_delta_speed_col = target_delta_speed_col
         self.fitted_ = False
         
         self.feature_names_out_ = [
-            "target_total_speed",
-            "target_speed_delta",
-            "target",
+            self.target_total_speed_col,
+            self.target_delta_speed_col,
+                self.target_col,
         ]
     
     # -----------------------------------------------------------------
@@ -69,26 +75,33 @@ class TargetVariableCreator(BaseFeatureTransformer):
         self._log("Creating target variables.")
 
         # Basic target: raw speed + delta
-        df['target_total_speed'] = df.groupby(self.sensor_col)[self.value_col].shift(-self.horizon)
-        df['target_speed_delta'] = df['target_total_speed'] - df[self.value_col]
+        df[self.target_total_speed_col] = df.groupby(self.sensor_col)[self.value_col].shift(-self.horizon)
+        df[self.target_delta_speed_col] = df[self.target_total_speed_col] - df[self.value_col]
         self._log("Computed 'target_total_speed' and 'target_speed_delta'.")
 
-        used_cols = ['target_total_speed', 'target_speed_delta']
+        used_cols = [self.target_total_speed_col, self.target_delta_speed_col]
 
         # Optional correction target (e.g., GMAN residual)
         if self.use_gman:
-            df['target'] = df['target_total_speed'] - df[self.gman_col]
+            df[self.target_col] = df[self.target_total_speed_col] - df[self.gman_col]
+            used_cols.append(self.gman_col)
             self._log("GMAN correction target created.")
         else:
-            df['target'] = df['target_speed_delta']
+            df[self.target_col] = df[self.target_delta_speed_col]
             self._log("Using delta speed as final target.")
 
-        used_cols.append('target')
+        used_cols.append(self.target_col)
 
         # Drop incomplete rows (NaNs at horizon edges)
-        df = df.dropna(subset=['target'])
+        df = df.dropna(subset=[self.target_col])
         self._log(f"Final target column ready. {df.shape[0]} rows retained after dropping NaNs.")
         self.feature_names_out_ = used_cols
+        
+        # ensure datetime is increasing
+        ok = df.groupby(self.sensor_col, sort=False)[self.datetime_col] \
+            .apply(lambda s: s.is_monotonic_increasing).all()
+        if not ok:
+            raise ValueError("Within-sensor datetime is not monotonic; sort upstream.")
         
 
         return df
@@ -104,6 +117,9 @@ class TargetVariableCreator(BaseFeatureTransformer):
                 value_col=self.value_col,
                 gman_col=self.gman_col,
                 use_gman=self.use_gman,
+                target_col=self.target_col,
+                target_total_speeed_col=self.target_total_speed_col,
+                target_delta_speed_col=self.target_delta_speed_col,
             ),
         }
 
@@ -117,7 +133,10 @@ class TargetVariableCreator(BaseFeatureTransformer):
             value_col=params["value_col"],
             gman_col=params["gman_col"],
             use_gman=params["use_gman"],
-            disable_logs=False,
+            target_col = params["target_col"],
+            target_total_speed_col=params["target_total_speeed_col"],
+            target_delta_speed_col=params["target_delta_speed_col"],
+            disable_logs=False
         )
         inst.fitted_ = True
         return inst

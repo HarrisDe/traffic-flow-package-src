@@ -52,6 +52,15 @@ payload.json
 outputs/*
 !outputs/.gitkeep
 # -------------------------------
+# Scripts
+# -------------------------------
+
+scripts/*
+!scripts/make_payload.py
+!scripts/make_payload_deprecated.py
+!scripts/train_xgb.py
+
+# -------------------------------
 # Other
 # -------------------------------
 *.sqlite3

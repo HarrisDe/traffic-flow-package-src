@@ -81,6 +81,12 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.lag_fe: Optional[TemporalLagFeatureAdder] = None
         self.congestion_flagger:   PerSensorCongestionFlagger | None = None
         self.outlier_flagger:      GlobalOutlierFlagger | None = None
+        
+        
+        # optional / horizon-specific components that might not be created
+        self.previous_day_fe: Optional[PreviousWeekdayWindowFeatureEngineer] = None
+        self.weather_dropper: Optional[WeatherFeatureDropper] = None
+        self.gman_adder: Optional[GMANPredictionAdder] = None
 
 
         # split artefacts
@@ -124,7 +130,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         diagnose_extreme_changes: bool = False,
         window_size: int = 5,
         spatial_adj: int = 1,
-        adj_are_relative: bool = False,
+        adj_are_relative: bool = True,
         normalize_by_distance: bool = True,
         lag_steps: int = 25,
         relative_lags: bool = True,
@@ -176,6 +182,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             "relative_threshold": relative_threshold,
             "smoothing_window":   window_size,
             "use_median":         use_median_instead_of_mean_smoothing,
+            "filter_extreme_changes": bool(filter_extreme_changes),
+            "filter_on_train_only":   bool(filter_on_train_only),
+            "smooth_speeds":          bool(smooth_speeds),
         }
 
         # 2) Sensor encoding
@@ -205,7 +214,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             disable_logs=self.disable_logs,
             smoothing_id=self.smoothing_id,
         )
-        
+        self.downstream_dict = spatial.downstream_dict_
+        self.upstream_dict = spatial.upstream_dict_
         spatial.fit(df)
         df = spatial.transform(df)
         self.adjacency_fe = spatial
@@ -287,8 +297,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         drop_datetime: bool = True,
         drop_sensor_id: bool = True
     ):  
+        self.row_order = [self.datetime_col,self.sensor_col]
         
-        if drop_datetime or drop_sensor_id:
+        if not(drop_datetime) or not(drop_sensor_id):
             warnings.warn(f"[finalize_for_horizon] drop_datetime feature value is: {drop_datetime},\
                           drop_sensor_id value is: {drop_sensor_id}. These columns both \
                               must not exist when training the model, either drop them before training or \
@@ -297,6 +308,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             raise RuntimeError("Call prepare_base_features() first.")
 
         df = self.base_df.copy()
+        df = df.sort_values(self.row_order, kind="mergesort").reset_index(drop=True)
+        
 
         # --- GMAN merge (horizon-specific) -----------------------------
         if df_gman is not None:
@@ -349,7 +362,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             self.weather_dropper = weather_dropper
 
         # --- target & prediction date ---------------------------------
-        df["date_of_prediction"] = df.groupby(self.sensor_col)[self.datetime_col].shift(
+        df["prediction_time"] = df.groupby(self.sensor_col)[self.datetime_col].shift(
             -horizon
         )
 
@@ -387,7 +400,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             "test_set",
             "gman_prediction_date",
             "gman_target_date",
-            "date_of_prediction",
+            "prediction_time",
         ]
         if drop_datetime:
             cols_to_drop.append(self.datetime_col)
@@ -489,35 +502,67 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             drop_sensor_id= drop_sensor_id
         )
     
-    def export_states(self) -> dict:
+    def export_states(self, strict: bool = False) -> dict:
         """
         Collect everything an inference pipeline will need.
-        Call ONLY after prepare_base_features() has been executed.
+        strict=False  -> never raises for missing components; absent parts export as None.
+        strict=True   -> raises if typical training artifacts are missing (optional).
         """
         if not self.base_features_prepared:
             raise RuntimeError("Base features not prepared. Run prepare_base_features() first.")
         if not self.horizon_finalized:
             raise RuntimeError("Horizon not finalized. Run finalise_for_horizon() first.")
+        
+        def safe_export(obj: Optional[object]) -> Optional[dict]:
+            """
+            Safely export state of an object, or None if not available.
+            """
+            return obj.export_state() if obj is not None else None
+        
+        states = {
+                # Schema/cleaning metadata (export None if not available)
+                "schema_state": {
+                    "sensor_col":   getattr(self, "sensor_col", None),
+                    "datetime_col": getattr(self, "datetime_col", None),
+                    "value_col":    getattr(self, "value_col", None),
+                    "row_order":    getattr(self, "row_order", None),
+                },
+                "clean_state":           getattr(self, "clean_state", None),
 
-        required = {
-        "clean_state":           self.clean_state,
-        "sensor_encoder_state":  self.sensor_encoder.export_state(),
-        "datetime_state":        self.datetime_fe.export_state(),
-        "adjacency_state":       self.adjacency_fe.export_state(),
-        "lag_state":             self.lag_fe.export_state(),
-        "congestion_state":      self.congestion_flagger.export_state(),
-        "outlier_state":         self.outlier_flagger.export_state(),
-        "target_state":          self.target_creator.export_state(),
-        "previous_day_state":    self.previous_day_fe.export_state(),
-        "weather_state":         self.weather_dropper.export_state(),
-        "feature_cols":          list(self.X_train.columns),
-        "dtype_schema":          getattr(self, "dtype_schema", None)
-        }
-        # sanity-check none are None
-        missing = [k for k, v in required.items() if v is None]
-        if missing:
-            raise RuntimeError(f"export_states(): the following pieces are missing {missing}")
-        return required
+                # Core transformers (all optional)
+                "sensor_encoder_state":  safe_export(self.sensor_encoder),
+                "datetime_state":        safe_export(self.datetime_fe),
+                "adjacency_state":       safe_export(self.adjacency_fe),
+                "lag_state":             safe_export(self.lag_fe),
+                "congestion_state":      safe_export(self.congestion_flagger),
+                "outlier_state":         safe_export(self.outlier_flagger),
+
+                # Targets
+                "target_state":          safe_export(self.target_creator),
+
+                # Horizon-specific / optional
+                "previous_day_state":    safe_export(self.previous_day_fe),
+                "weather_state":         safe_export(self.weather_dropper),
+                "gman_state":            safe_export(self.gman_adder),
+
+                # Model wiring (optional as well)
+                "feature_cols":          list(self.X_train.columns) if self.X_train is not None else None,
+                "dtype_schema":          getattr(self, "dtype_schema", None),
+            }
+
+        if strict:
+            # Optional validation block you can turn on in tests/CI
+            must = [
+                "schema_state", "clean_state", "sensor_encoder_state",
+                "datetime_state", "adjacency_state", "lag_state",
+                "congestion_state", "outlier_state", "target_state",
+                "feature_cols", "dtype_schema",
+            ]
+            missing = [k for k in must if states.get(k) in (None, {}, [])]
+            if missing:
+                raise RuntimeError(f"export_states(strict=True): missing pieces: {missing}")
+
+        return states
 
         
 class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
@@ -575,7 +620,7 @@ class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
         convert_gman_prediction_to_delta_speed=True,
         window_size=3,
         spatial_adj=1,
-        adj_are_relative=False,
+        adj_are_relative=True,
         normalize_by_distance=True,
         lag_steps=25,
         relative_lags=True,
@@ -677,15 +722,6 @@ class TrafficDataPipelineOrchestrator_deprecated(LoggingMixin):
 
         # Step 6: Previous Weekday
         if add_previous_weekday_feature:
-            # prevday = PreviousWeekdayValueFeatureEngineer(
-            #     datetime_col=self.datetime_col,
-            #     sensor_col=self.sensor_col,
-            #     value_col=self.value_col,
-            #     horizon_minutes=horizon,
-            #     strict_weekday_match=strict_weekday_match,
-            #     disable_logs=self.disable_logs
-            # )
-            
 
             prevday = PreviousWeekdayWindowFeatureEngineer(
                 datetime_col=self.datetime_col,
