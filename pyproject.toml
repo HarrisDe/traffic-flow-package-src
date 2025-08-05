@@ -18,3 +18,9 @@ package-dir = {"" = "traffic_flow"}     # <-- top-level package lives here
 
 [tool.setuptools.packages.find]
 where = ["traffic_flow"]               # auto-discover sub-packages
+
+[project.optional-dependencies]
+service = [
+  "flask>=2.3,<3.0",
+  "gunicorn>=21,<22"
+]
