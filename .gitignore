@@ -59,7 +59,7 @@ scripts/*
 !scripts/make_payload.py
 !scripts/make_payload_deprecated.py
 !scripts/train_xgb.py
-
+!scripts/compare_api_vs_local.py
 # -------------------------------
 # Other
 # -------------------------------

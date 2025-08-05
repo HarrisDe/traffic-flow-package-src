@@ -10,7 +10,6 @@ import pandas as pd
 from ..inference.inference_pipeline import TrafficInferencePipeline
 from ..inference.prediction_protocol import make_prediction_frame
 from ..utils.helper_utils import LoggingMixin  # adjust import to your project
-
 class InferenceRuntime(LoggingMixin):
     """
     Load a saved artifact (model + states), rebuild the inference pipeline,
@@ -43,9 +42,9 @@ class InferenceRuntime(LoggingMixin):
 
         # Rebuild inference pipeline from states
         self.pipeline = TrafficInferencePipeline(self.states, keep_datetime=keep_datetime)
+        self.feats = None
 
     # ------------------------------- public API ------------------------------- #
-
     def predict_df(
         self,
         df_raw: pd.DataFrame,
@@ -62,64 +61,146 @@ class InferenceRuntime(LoggingMixin):
         ----------
         df_raw : pd.DataFrame
             Raw rows with at least (datetime_col, sensor_col, value_col).
-        trim_warmup : bool, default True
+        df_for_ML : Optional[pd.DataFrame]
+            Full ML dataframe (aligned with training), only required if
+            add_y_act=True (to merge in ground-truth) or if you choose
+            to compute y_pred_total from df_for_ML instead of feats.
+        trim_warmup : bool
             If True, drop the first `lag_steps` rows per sensor *before*
-            feature generation to avoid undefined lag values (no warm-up buffer).
-            This mirrors the notebook parity check you ran.
-        add_total : bool, default True
-            If True, include y_pred_total = y_pred_delta + current value.
+            feature generation so inference mirrors your notebook parity.
+        add_total : bool
+            If True, compute y_pred_total = y_pred_delta + current value.
+            (This uses `feats[value_col]` if available; otherwise falls back
+            to df_for_ML[value_col] if you pass df_for_ML.)
+        add_y_act : bool
+            If True, merge y_act_total from df_for_ML onto the predictions.
 
         Returns
         -------
         pred_df : pd.DataFrame
-            Canonical prediction frame (see class docstring).
+            Canonical predictions.
         feats : pd.DataFrame
-            Engineered features aligned to `pred_df`.
+            Engineered features (aligned to pred_df).
         """
-        if add_y_act and df_for_ML is None:
-            raise ValueError("`df_for_ML` must be provided when `add_y_act=True` to access actual target values.")
-        
-        # 1) deterministic sort
+        # ---- 1) deterministic sort of raw input ----
         if (self.datetime_col in df_raw.columns) and (self.sensor_col in df_raw.columns):
             df_sorted = df_raw.sort_values(
-                [self.datetime_col, self.sensor_col],
-                kind="mergesort"
+                [self.datetime_col, self.sensor_col], kind="mergesort"
             ).reset_index(drop=True)
         else:
             raise ValueError(
                 f"df_raw must contain columns {self.datetime_col!r} and {self.sensor_col!r}"
             )
 
-        if (df_for_ML is not None) and (self.datetime_col in df_for_ML.columns) and (self.sensor_col in df_for_ML.columns):
-            df_for_ML = df_for_ML.sort_values(
-                [self.datetime_col, self.sensor_col],
-                kind="mergesort"
-            ).reset_index(drop=True)
-        else:
-            raise ValueError(
-                f"df_for_ML must must not be none and contain columns {self.datetime_col!r} and {self.sensor_col!r}. Use TrafficDataPipelinOrchestrator to create it."
-            )
-        # 2) optional warm-up trim 
+        # ---- 2) optional warm-up trimming (before feature gen) ----
         if trim_warmup:
             df_sorted = self._trim_warmup_rows(df_sorted)
 
-        # 3) features -> model
-        feats = self.pipeline.transform(df_sorted).reindex(columns=self.feature_cols, copy=False)
+        # ---- 3) feature engineering + model inference ----
+        feats = self.pipeline.transform(df_sorted).reindex(self.feature_cols, axis=1, copy=False)
         pred_delta = self.model.predict(feats)
 
-        # 4) canonical prediction frame (includes timestamp math & optional totals)
+        # ---- 4) df_for_ML is only needed if we will use it ----
+        df_for_ML_sorted = None
+        if add_y_act or (add_total and "value" not in feats.columns and df_for_ML is not None):
+            # we need df_for_ML for y_act and/or to compute y_pred_total
+            if (df_for_ML is None) or (self.datetime_col not in df_for_ML.columns) or (self.sensor_col not in df_for_ML.columns):
+                raise ValueError(
+                    f"`df_for_ML` must include {self.datetime_col!r} and {self.sensor_col!r} "
+                    f"when add_y_act=True or when feats lacks 'value'."
+                )
+            df_for_ML_sorted = df_for_ML.sort_values(
+                [self.datetime_col, self.sensor_col], kind="mergesort"
+            ).reset_index(drop=True)
+
+        # ---- 5) build canonical output ----
         pred_df = make_prediction_frame(
             df_raw=df_sorted,
-            df_for_ML= df_for_ML,
+            df_for_ML=df_for_ML_sorted,
             feats=feats,
             pred_delta=pred_delta,
             states=self.states,
             horizon_min=self.horizon,
             add_total=add_total,
             add_y_act=add_y_act,
-
         )
         return pred_df, feats
+   
+   
+    # def predict_df(
+    #     self,
+    #     df_raw: pd.DataFrame,
+    #     *,
+    #     df_for_ML: Optional[pd.DataFrame] = None,
+    #     trim_warmup: bool = False,
+    #     add_total: bool = True,
+    #     add_y_act: bool = False,
+    # ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    #     """
+    #     Transform raw rows -> features -> model predictions.
+
+    #     Parameters
+    #     ----------
+    #     df_raw : pd.DataFrame
+    #         Raw rows with at least (datetime_col, sensor_col, value_col).
+    #     trim_warmup : bool, default True
+    #         If True, drop the first `lag_steps` rows per sensor *before*
+    #         feature generation to avoid undefined lag values (no warm-up buffer).
+    #         This mirrors the notebook parity check you ran.
+    #     add_total : bool, default True
+    #         If True, include y_pred_total = y_pred_delta + current value.
+
+    #     Returns
+    #     -------
+    #     pred_df : pd.DataFrame
+    #         Canonical prediction frame (see class docstring).
+    #     feats : pd.DataFrame
+    #         Engineered features aligned to `pred_df`.
+    #     """
+    #     if add_y_act and df_for_ML is None:
+    #         raise ValueError("`df_for_ML` must be provided when `add_y_act=True` to access actual target values.")
+        
+    #     # 1) deterministic sort
+    #     if (self.datetime_col in df_raw.columns) and (self.sensor_col in df_raw.columns):
+    #         df_sorted = df_raw.sort_values(
+    #             [self.datetime_col, self.sensor_col],
+    #             kind="mergesort"
+    #         ).reset_index(drop=True)
+    #     else:
+    #         raise ValueError(
+    #             f"df_raw must contain columns {self.datetime_col!r} and {self.sensor_col!r}"
+    #         )
+
+    #     if (df_for_ML is not None) and (self.datetime_col in df_for_ML.columns) and (self.sensor_col in df_for_ML.columns):
+    #         df_for_ML = df_for_ML.sort_values(
+    #             [self.datetime_col, self.sensor_col],
+    #             kind="mergesort"
+    #         ).reset_index(drop=True)
+    #     else:
+    #         raise ValueError(
+    #             f"df_for_ML must must not be none and contain columns {self.datetime_col!r} and {self.sensor_col!r}. Use TrafficDataPipelinOrchestrator to create it."
+    #         )
+    #     # 2) optional warm-up trim 
+    #     if trim_warmup:
+    #         df_sorted = self._trim_warmup_rows(df_sorted)
+
+    #     # 3) features -> model
+    #     feats = self.pipeline.transform(df_sorted).reindex(columns=self.feature_cols, copy=False)
+    #     pred_delta = self.model.predict(feats)
+    #     self.feats = feats
+    #     # 4) canonical prediction frame (includes timestamp math & optional totals)
+    #     pred_df = make_prediction_frame(
+    #         df_raw=df_sorted,
+    #         df_for_ML= df_for_ML,
+    #         feats=feats,
+    #         pred_delta=pred_delta,
+    #         states=self.states,
+    #         horizon_min=self.horizon,
+    #         add_total=add_total,
+    #         add_y_act=add_y_act,
+
+    #     )
+    #     return pred_df, feats
 
     def predict_total_series(self, df_raw: pd.DataFrame, *, trim_warmup: bool = True) -> pd.Series:
         """
@@ -152,6 +233,10 @@ class InferenceRuntime(LoggingMixin):
         rank = g.cumcount()
         kept = rank >= lag_steps
         return df.loc[kept].reset_index(drop=True)
+    
+    
+    
+    
 
 class InferenceRuntime_orig(LoggingMixin):
     """
