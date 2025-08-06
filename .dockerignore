@@ -1,0 +1,26 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.ipynb
+.ipynb_checkpoints/
+data/
+logs/
+dist/
+build/
+
+
+data/
+models/
+models_from_cluster_filtering_window_size_7/
+notebooks/
+outputs/
+plots/
+results/
+protected-dirt/
+
+# Python envs
+.venv/
+env/
+.conda/
