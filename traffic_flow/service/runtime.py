@@ -50,7 +50,7 @@ class InferenceRuntime(LoggingMixin):
         df_raw: pd.DataFrame,
         *,
         df_for_ML: Optional[pd.DataFrame] = None,
-        trim_warmup: bool = False,
+        trim_warmup: bool = True,
         add_total: bool = True,
         add_y_act: bool = False,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -92,7 +92,8 @@ class InferenceRuntime(LoggingMixin):
                 f"df_raw must contain columns {self.datetime_col!r} and {self.sensor_col!r}"
             )
 
-        # ---- 2) optional warm-up trimming (before feature gen) ----
+        # ---- 2) optional warm-up trimming (before feature gen) ---
+        print(f"Trimming warm-up rows is set to: {trim_warmup}")
         if trim_warmup:
             df_sorted = self._trim_warmup_rows(df_sorted)
 
@@ -126,8 +127,42 @@ class InferenceRuntime(LoggingMixin):
         )
         return pred_df, feats
    
-   
-    # def predict_df(
+
+    def predict_total_series(self, df_raw: pd.DataFrame, *, trim_warmup: bool = True) -> pd.Series:
+        """
+        Convenience: return only y_pred_total as a Series (aligned to features).
+        """
+        pred_df, _ = self.predict_df(df_raw, trim_warmup=trim_warmup, add_total=True)
+        return pred_df["y_pred_total"]
+    
+    
+    
+
+    # ------------------------------ internals -------------------------------- #
+
+    def _trim_warmup_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Drop the first `lag_steps` rows per sensor so inference matches an
+        offline pipeline that also discards those rows (no warm-up buffer).
+
+        Notes
+        -----
+        - `lag_steps` comes from the saved state (states['lag_state']['lags']).
+        - Requires the frame to be sorted by (datetime_col, sensor_col).
+        - Returns a new frame; does not mutate the input.
+        """
+        lag_steps = int(self.states.get("lag_state", {}).get("lags", 0))
+        if lag_steps <= 0:
+            return df.copy()
+
+        g = df.groupby(self.sensor_col, sort=False)
+        rank = g.cumcount()
+        kept = rank >= lag_steps
+        return df.loc[kept].reset_index(drop=True)
+    
+    
+
+   # def predict_df(
     #     self,
     #     df_raw: pd.DataFrame,
     #     *,
@@ -201,41 +236,6 @@ class InferenceRuntime(LoggingMixin):
 
     #     )
     #     return pred_df, feats
-
-    def predict_total_series(self, df_raw: pd.DataFrame, *, trim_warmup: bool = True) -> pd.Series:
-        """
-        Convenience: return only y_pred_total as a Series (aligned to features).
-        """
-        pred_df, _ = self.predict_df(df_raw, trim_warmup=trim_warmup, add_total=True)
-        return pred_df["y_pred_total"]
-    
-    
-    
-
-    # ------------------------------ internals -------------------------------- #
-
-    def _trim_warmup_rows(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Drop the first `lag_steps` rows per sensor so inference matches an
-        offline pipeline that also discards those rows (no warm-up buffer).
-
-        Notes
-        -----
-        - `lag_steps` comes from the saved state (states['lag_state']['lags']).
-        - Requires the frame to be sorted by (datetime_col, sensor_col).
-        - Returns a new frame; does not mutate the input.
-        """
-        lag_steps = int(self.states.get("lag_state", {}).get("lags", 0))
-        if lag_steps <= 0:
-            return df.copy()
-
-        g = df.groupby(self.sensor_col, sort=False)
-        rank = g.cumcount()
-        kept = rank >= lag_steps
-        return df.loc[kept].reset_index(drop=True)
-    
-    
-    
     
 
 class InferenceRuntime_orig(LoggingMixin):

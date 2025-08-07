@@ -28,6 +28,37 @@ def create_app(artifact_path: str | None = None) -> Flask:
             "features": rt.feature_cols,
         }), 200
 
+
+
+    @app.post("/predict")
+    def predict():
+        payload = request.get_json(force=True)
+        if not payload or "records" not in payload:
+            return jsonify({"error": "Payload must include 'records' list"}), 400
+
+        df_raw = pd.DataFrame(payload["records"])
+        # minimal validation
+        for c in ("sensor_id", "date", "value"):
+            if c not in df_raw.columns:
+                return jsonify({"error": f"Missing column: {c}"}), 400
+
+        pred_df, _ = rt.predict_df(df_raw)
+        return jsonify({
+            "horizon": rt.horizon,
+            "n": int(len(pred_df)),
+            "predictions": pred_df.to_dict(orient="records")
+        }), 200
+
+    return app
+
+if __name__ == "__main__":
+    # Dev runner; for prod use gunicorn
+    port = int(os.getenv("PORT", "8080"))
+    app = create_app()
+    app.run("0.0.0.0", port, debug=False)
+    
+    
+    
     # @app.post("/predict")
     # def predict():
     #     """
@@ -78,33 +109,6 @@ def create_app(artifact_path: str | None = None) -> Flask:
     #     }), 200
 
     # return app
-
-    @app.post("/predict")
-    def predict():
-        payload = request.get_json(force=True)
-        if not payload or "records" not in payload:
-            return jsonify({"error": "Payload must include 'records' list"}), 400
-
-        df_raw = pd.DataFrame(payload["records"])
-        # minimal validation
-        for c in ("sensor_id", "date", "value"):
-            if c not in df_raw.columns:
-                return jsonify({"error": f"Missing column: {c}"}), 400
-
-        pred_df, _ = rt.predict_df(df_raw)
-        return jsonify({
-            "horizon": rt.horizon,
-            "n": int(len(pred_df)),
-            "predictions": pred_df.to_dict(orient="records")
-        }), 200
-
-    return app
-
-if __name__ == "__main__":
-    # Dev runner; for prod use gunicorn
-    port = int(os.getenv("PORT", "8080"))
-    app = create_app()
-    app.run("0.0.0.0", port, debug=False)
 
 # We read where the artifact lives from an environment variable.
 # If you don't set it, the default points to artifacts/traffic_pipeline_h-15.joblib
