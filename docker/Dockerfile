@@ -19,7 +19,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 #######################################################################
-# 4) COPY + INSTALL YOUR PYTHON PACKAGE                              #
+# 4) COPY + INSTALL PYTHON PACKAGE                              
 #######################################################################
 WORKDIR /app             
 
@@ -30,7 +30,7 @@ COPY pyproject.toml ./
 # 4-b) copy the actual source code
 COPY traffic_flow/ ./traffic_flow/
 
-# 4-c) install *your* package plus the “service” extras (Flask+Gunicorn)
+# 4-c) install package plus the “service” extras (Flask+Gunicorn)
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir '.[service]' \
  && pip install --no-cache-dir --force-reinstall --upgrade "gunicorn==21.2.0"
@@ -40,8 +40,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 #######################################################################
 # ▸ If you want one immutable image per model version, **add it here**.
 # ▸ If you prefer to swap models without rebuilding the image,
-#   comment this line and mount -v /host/artifacts:/app/artifacts
-COPY artifacts/ ./artifacts/
+#   comment this line below and mount -v /host/artifacts:/app/artifacts
+#COPY artifacts/ ./artifacts/
 
 # path that the Flask code expects (can be overridden with -e)
 ENV ARTIFACT_PATH=/app/artifacts/traffic_pipeline_h-15.joblib

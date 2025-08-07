@@ -13,14 +13,19 @@ build/
 
 data/
 models/
-models_from_cluster_filtering_window_size_7/
 notebooks/
 outputs/
 plots/
 results/
 protected-dirt/
 
+**/__pycache__
+**/*.pyc
+artifacts/   
+
 # Python envs
 .venv/
 env/
 .conda/
+
+

@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ..                # ← repo root is the build context
+      dockerfile: docker/Dockerfile
+    image: traffic-flow:local    # name/tag for local dev
+    container_name: traffic-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"              # host:container
+    environment:
+      ARTIFACT_PATH: /models/traffic_pipeline_h-15.joblib
+    volumes:
+      - ../artifacts:/models:ro  # mount your local artifacts folder into the container
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
