@@ -2,3 +2,7 @@ pandas<3.0,>=2.0
 scikit-learn<2.0,>=1.4
 xgboost<3.0,>=2.0
 joblib<2.0,>=1.4
+
+[service]
+flask<3.0,>=2.3
+gunicorn<22,>=21

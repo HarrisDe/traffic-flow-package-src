@@ -35,6 +35,8 @@ RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir '.[service]' \
  && pip install --no-cache-dir --force-reinstall --upgrade "gunicorn==21.2.0"
 
+
+
 #######################################################################
 # 5) COPY THE TRAINED MODEL (artifact)                               #
 #######################################################################
@@ -46,6 +48,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 # path that the Flask code expects (can be overridden with -e)
 ENV ARTIFACT_PATH=/app/artifacts/traffic_pipeline_h-15.joblib
 
+# this line is used so the config actually exists inside the image
+COPY docker/gunicorn.conf.py /app/gunicorn.conf.py
+
 #######################################################################
 # 6) NETWORK & PROCESS ENTRYPOINT                                    #
 #######################################################################
@@ -55,4 +60,4 @@ EXPOSE 8080
 # 6-b) Start Gunicorn, **factory style**.
 #      `traffic_flow.service.app:create_app()` means
 #      “import create_app from that module and CALL it”.
-CMD ["gunicorn","--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "120", "--access-logfile", "-","traffic_flow.service.app:create_app()"]
+CMD gunicorn -c /app/gunicorn.conf.py "traffic_flow.service.app:create_app()"

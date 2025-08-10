@@ -6,3 +6,6 @@ Requires-Dist: pandas<3.0,>=2.0
 Requires-Dist: scikit-learn<2.0,>=1.4
 Requires-Dist: xgboost<3.0,>=2.0
 Requires-Dist: joblib<2.0,>=1.4
+Provides-Extra: service
+Requires-Dist: flask<3.0,>=2.3; extra == "service"
+Requires-Dist: gunicorn<22,>=21; extra == "service"

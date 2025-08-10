@@ -28,6 +28,7 @@ traffic_flow/features/target_variable_feature.py
 traffic_flow/features/temporal_features.py
 traffic_flow/inference/data_cleaner.py
 traffic_flow/inference/inference_pipeline.py
+traffic_flow/inference/prediction_protocol.py
 traffic_flow/modeling/__init__.py
 traffic_flow/modeling/model_tuning.py
 traffic_flow/modeling/model_tuning_deprecated.py

@@ -52,6 +52,7 @@ save_repo_to_zip.txt
 payload.json
 outputs/*
 !outputs/.gitkeep
+resp.json
 # -------------------------------
 # Scripts
 # -------------------------------
