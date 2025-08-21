@@ -5,7 +5,6 @@ import os
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error,  median_absolute_error
 import numpy as np
-from keras.models import load_model
 import matplotlib.patheffects as PathEffects
 #from .data_processing import TrafficFlowDataProcessing
 from ..utils.helper_utils import normalize_data
@@ -17,6 +16,7 @@ from time import time
 import pandas as pd
 from typing import Optional, Dict, Union
 from ..inference.prediction_protocol import make_prediction_frame
+from ..preprocessing.cleaning import clean_and_cast
 
 
 
@@ -228,6 +228,7 @@ class ModelEvaluator:
     def to_canonical_predictions(
         self,
         *,
+        df_raw: pd.DataFrame,
         model=None,
         model_path: Optional[str] = None,
         states: Optional[dict] = None,
@@ -246,6 +247,15 @@ class ModelEvaluator:
             model = self.load_model_from_path(model_path)
         if model is None:
             raise ValueError("Provide a model or model_path.")
+        
+        # override columns from states if different than defaults
+        value_col = states.get("sensor_encoder_state",self.value_col).get("value_col", self.value_col)
+        dt_col = states.get("datetime_state", self.date_col).get("datetime_col", self.date_col)  
+        df_raw = clean_and_cast(df_raw,value_col=value_col)
+        
+        df_raw[dt_col] = pd.to_datetime(df_raw[dt_col], errors="coerce")
+        df_raw.sort_values(by=[dt_col, self.sensor_col], inplace=True)
+        
 
         # 2) Predict deltas on X_test
         y_pred_delta = model.predict(self.X_test)
@@ -253,19 +263,19 @@ class ModelEvaluator:
         # 3) Build a minimal RAW-like frame aligned to X_test rows
         df_test = self.df_for_ML.copy()   # already test_set only
         # input_time for the row; if 'date' is missing, reconstruct from date_of_prediction - horizon
-        if self.date_col in df_test.columns:
-            raw_date = df_test[self.date_col].copy()
-        else:
-            if horizon_min is None:
-                raise ValueError("horizon_min is required if 'date' is not present in df_for_ML.")
-            raw_date = pd.to_datetime(df_test["date_of_prediction"]) - pd.to_timedelta(horizon_min, unit="m")
+        # if self.date_col in df_test.columns:
+        #     raw_date = df_test[self.date_col].copy()
+        # else:
+        #     if horizon_min is None:
+        #         raise ValueError("horizon_min is required if 'date' is not present in df_for_ML.")
+        #     raw_date = pd.to_datetime(df_test["date_of_prediction"]) - pd.to_timedelta(horizon_min, unit="m")
 
-        df_raw_min = pd.DataFrame({
-            self.sensor_col: df_test[self.sensor_col],
-            self.date_col: pd.to_datetime(raw_date, errors="coerce"),
-            self.value_col: self.X_test[self.value_col].to_numpy(dtype=float),
-            'target_total_speed': df_test['target_total_speed']
-        }, index=self.X_test.index)
+        # df_raw_min = pd.DataFrame({
+        #     self.sensor_col: df_test[self.sensor_col],
+        #     self.date_col: pd.to_datetime(raw_date, errors="coerce"),
+        #     self.value_col: self.X_test[self.value_col].to_numpy(dtype=float),
+        #     'target_total_speed': df_test['target_total_speed']
+        # }, index=self.X_test.index)
 
         # 4) Infer horizon if not provided
         if horizon_min is None:
@@ -277,20 +287,21 @@ class ModelEvaluator:
                 horizon_min = 15
                 warnings.warn("Neither horizon_min nor the required column to calculate the horizon manually(date_of_prediction) is provided. Assuming horizon is 15 minutes.")
 
-        if states is None:
-            raise ValueError("states (from tdp.export_states()) must be provided.")
-        print(f"df_raw_min_cols: {df_raw_min.columns}")
+        # if states is None:
+        #     raise ValueError("states (from tdp.export_states()) must be provided.")
+        # print(f"df_raw_min_cols: {df_raw_min.columns}")
         # 5) Canonical frame
         pred_df = make_prediction_frame(
-            df=self.df_for_ML.rename(columns={self.date_col: "date"}),  # column name expected by states
-            feats=self.X_test,
+            df_raw = df_raw,
+            df_for_ML=self.df_for_ML.rename(columns={self.date_col: "date"}),  # column name expected by states
+            #feats=self.X_test,
             pred_delta=y_pred_delta,
             states=states,
             horizon_min=horizon_min,
             add_total=add_total,
             sensor_col=self.sensor_col,
             add_y_act=True
-        )
+                )
         return pred_df
     
     

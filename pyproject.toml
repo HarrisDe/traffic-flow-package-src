@@ -1,12 +1,28 @@
 [project]
 name = "traffic-flow"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.11"
 dependencies = [
-  "pandas>=2.0,<3.0",
-  "scikit-learn>=1.4,<2.0",
-  "xgboost>=2.0,<3.0",
-  "joblib>=1.4,<2.0"
+  "numpy>=1.26.4,<1.27",
+  "pandas>=2.2.2,<2.3",
+  "pyarrow>=16.1.0,<17",
+  "scipy>=1.11.4,<1.12",
+  "scikit-learn>=1.4.2,<1.5",
+  "xgboost>=2.0.3,<2.1",
+  "joblib>=1.4.2,<1.5",
+  "flask>=2.3.3,<2.4",
+  "requests>=2.31,<3",
+  "fastparquet>=2024.5.0,<2025.0.0",
+  "nbformat>=5.10,<6"
+]
+
+[project.optional-dependencies]
+service = [
+  "gunicorn>=21.2,<22"
+]
+vis = [
+  "plotly>=5.19,<6",
+  "seaborn>=0.13,<0.14"
 ]
 
 [build-system]
@@ -14,13 +30,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = {"" = "traffic_flow"}     # <-- top-level package lives here
+package-dir = {"" = "traffic_flow"}
 
 [tool.setuptools.packages.find]
-where = ["traffic_flow"]               # auto-discover sub-packages
-
-[project.optional-dependencies]
-service = [
-  "flask>=2.3,<3.0",
-  "gunicorn>=21,<22",
-]
+where = ["traffic_flow"]

@@ -9,7 +9,9 @@ import warnings
 
 import numpy as np
 import pandas as pd
-
+import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 from ..features.gman_features import GMANPredictionAdder
 from ..utils.helper_utils import LoggingMixin
 from ..preprocessing.cleaning import (
@@ -52,6 +54,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
 
         # mutable state
         self.df: Optional[pd.DataFrame] = None
+        self.df_raw: Optional[pd.DataFrame] = None
         self.df_orig: Optional[pd.DataFrame] = None
         self.df_orig_smoothed: Optional[pd.DataFrame] = None
         self.datetime_col: Optional[str] = None
@@ -68,8 +71,31 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
     # ------------------------------------------------------------------ #
     # IO
     # ------------------------------------------------------------------ #
+    
+  
+    def _read_parquet_robust(self, path):
+        import pandas as pd, polars as pl, os
+        if os.path.isdir(path):
+            # Polars can read directory datasets too
+            df_pl = pl.read_parquet(str(path))
+        else:
+            df_pl = pl.read_parquet(str(path))
+        # Convert to pandas without Arrow extension dtypes
+        df = df_pl.to_pandas(use_pyarrow_extension_array=False)
+        # Make sure columns are plain strings
+        df.columns = [str(c) for c in df.columns]
+        return df
+    
     def load_data_parquet(self) -> None:
-        self.df = pd.read_parquet(self.file_path, engine="pyarrow")
+        
+        path = str(self.file_path)
+        print(f"path: {path}")
+        if not (os.path.isfile(path) or os.path.isdir(path)):
+            raise FileNotFoundError(f"Parquet path not found: {path}")
+
+        #self.df = self._read_parquet_robust(self.file_path)
+        self.df = pd.read_parquet(self.file_path)
+        self.df_raw = self.df.copy()  # keep the raw data for reference
 
         # resolve datetime column
         for col in self.datetime_cols:
@@ -140,6 +166,10 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         self.df["test_set"] = self.df[self.datetime_col] >= split_time
         self.first_test_timestamp = split_time
         self.last_test_timestamp = self.df.loc[self.df['test_set'],self.datetime_col].max()
+        
+        if self.df_raw is not None and self.datetime_col is not None:
+            raw_dt = pd.to_datetime(self.df_raw[self.datetime_col], errors="coerce")
+            self.df_raw_test = self.df_raw[raw_dt >= split_time].copy()
 
     # ------------------------------------------------------------------ #
     # Public method
@@ -179,7 +209,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
             )
         if filter_extreme_changes:
             if filter_on_train_only and "test_set" in self.df.columns:
-                mask = ~self.df['tesst_set']
+                mask = ~self.df['test_set']
                 self.df.loc[mask] = filter_and_interpolate_extremes(
                     self.df.loc[mask], sensor_col=self.sensor_col,
                     value_col=self.value_col, threshold=relative_threshold
@@ -270,6 +300,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
                 use_median=use_median_instead_of_mean,
             )
             self.df.loc[mask] = smoothed_part
+            self.df.loc[mask, self.value_col] = smoothed_part[self.value_col].astype(np.float32).to_numpy()
 
         elif smooth_on_train_and_test_separately and "test_set" in self.df.columns:
             # Smooth train and test independently
@@ -282,7 +313,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
                     window_size=window_size,
                     use_median=use_median_instead_of_mean,
                 )
-                self.df.loc[mask] = smoothed
+                self.df.loc[mask, self.value_col] = smoothed[self.value_col].astype(np.float32).to_numpy()
 
         else:
             # Smooth full dataset
@@ -293,3 +324,5 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
                 window_size=window_size,
                 use_median=use_median_instead_of_mean,
             )
+            
+            self.df[self.value_col] = self.df[self.value_col].astype(np.float32).to_numpy()

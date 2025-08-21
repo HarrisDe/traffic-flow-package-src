@@ -11,11 +11,11 @@ services:
     ports:
       - "8080:8080"              # host:container
     environment:
-      ARTIFACT_PATH: /models/traffic_pipeline_h-15.joblib
+      ARTIFACT_PATH: /app/artifacts/traffic_pipeline_h-15.joblib
     volumes:
-      - ../artifacts:/models:ro  # mount your local artifacts folder into the container
+      - ../artifacts:/app/artifacts:ro  # mount your local artifacts folder into the container
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
       interval: 30s
       timeout: 3s
       retries: 3

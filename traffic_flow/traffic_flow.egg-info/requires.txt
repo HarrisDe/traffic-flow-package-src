@@ -1,8 +1,11 @@
-pandas<3.0,>=2.0
-scikit-learn<2.0,>=1.4
+numpy<2.0,>=1.26
+scipy<1.12,>=1.11
+pandas<2.3,>=2.2
+pyarrow<17,>=15
+scikit-learn<1.5,>=1.4
 xgboost<3.0,>=2.0
 joblib<2.0,>=1.4
+flask<3.0,>=2.3
 
 [service]
-flask<3.0,>=2.3
 gunicorn<22,>=21

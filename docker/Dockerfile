@@ -1,63 +1,38 @@
+# 1) Base image
+FROM python:3.10-slim-bullseye
 
-# 1) BASE IMAGE – we start from an official slim Python interpreter   #
-#######################################################################
-FROM python:3.10-slim-bullseye   
-# -----------------------------------------------------------------------------
-# 2) BASIC ENVIRONMENT FLAGS
-#    - PYTHONDONTWRITEBYTECODE : don’t create *.pyc files (they bloat layers)
-#    - PYTHONUNBUFFERED        : get logs immediately, not buffered
-# -----------------------------------------------------------------------------
+# 2) Env hygiene
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
-# -----------------------------------------------------------------------------
-# 3) SYSTEM LIBS THAT THE MODEL NEEDS
-#    xgboost’s binary wheels link against libgomp (OpenMP).
-# -----------------------------------------------------------------------------
+# 3) System libs (xgboost needs OpenMP runtime)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
-#######################################################################
-# 4) COPY + INSTALL PYTHON PACKAGE                              
-#######################################################################
-WORKDIR /app             
+# 4) Workdir
+WORKDIR /app
 
-# 4-a) copy only metadata first (this lets Docker cache pip install
-#      as long as pyproject.toml doesn’t change)
-COPY pyproject.toml ./
+# 5) Copy pins first (best cache)
+COPY constraints.txt /tmp/constraints.txt
 
-# 4-b) copy the actual source code
-COPY traffic_flow/ ./traffic_flow/
+# 6) Copy project metadata and source
+COPY pyproject.toml /app/pyproject.toml
+COPY traffic_flow/ /app/traffic_flow/
 
-# 4-c) install package plus the “service” extras (Flask+Gunicorn)
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir '.[service]' \
- && pip install --no-cache-dir --force-reinstall --upgrade "gunicorn==21.2.0"
+# 7) Install: pin with constraints, install your package + [service] extras
+#    (Gunicorn is already in your [project.optional-dependencies].)
+RUN python -m pip install --upgrade pip \
+ && pip install -c /tmp/constraints.txt ".[service]"
 
-
-
-#######################################################################
-# 5) COPY THE TRAINED MODEL (artifact)                               #
-#######################################################################
-# ▸ If you want one immutable image per model version, **add it here**.
-# ▸ If you prefer to swap models without rebuilding the image,
-#   comment this line below and mount -v /host/artifacts:/app/artifacts
-#COPY artifacts/ ./artifacts/
-
-# path that the Flask code expects (can be overridden with -e)
+# 8) Model artifact location (can be overridden at runtime)
 ENV ARTIFACT_PATH=/app/artifacts/traffic_pipeline_h-15.joblib
 
-# this line is used so the config actually exists inside the image
+# 9) Gunicorn config
 COPY docker/gunicorn.conf.py /app/gunicorn.conf.py
 
-#######################################################################
-# 6) NETWORK & PROCESS ENTRYPOINT                                    #
-#######################################################################
-# 6-a) Docker runtime will publish container port → host port
-EXPOSE 8080          
-
-# 6-b) Start Gunicorn, **factory style**.
-#      `traffic_flow.service.app:create_app()` means
-#      “import create_app from that module and CALL it”.
-CMD gunicorn -c /app/gunicorn.conf.py "traffic_flow.service.app:create_app()"
+# 10) Network & entrypoint
+EXPOSE 8080
+CMD ["gunicorn", "-c", "/app/gunicorn.conf.py", "traffic_flow.service.app:create_app()"]

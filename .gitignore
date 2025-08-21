@@ -62,6 +62,7 @@ scripts/*
 !scripts/make_payload_deprecated.py
 !scripts/train_xgb.py
 !scripts/compare_api_vs_local.py
+!scripts/gen_constraints.py
 # -------------------------------
 # Other
 # -------------------------------

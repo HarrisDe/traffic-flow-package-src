@@ -178,9 +178,9 @@ class AdjacentSensorFeatureAdder(BaseFeatureTransformer):
                 df[up_col] = df[up_col] / 3.6 / df[self.sensor_col].map(up_dist_map)  # type: ignore[arg-type]
 
             # Finalize and clean
-            df.drop(columns=[f"{down_col}_id", f"{up_col}_id"], inplace=True)
-            df[down_col].fillna(self.fill_nans_value, inplace=True)
-            df[up_col].fillna(self.fill_nans_value, inplace=True)
+            df.drop(columns=[f"{down_col}_id", f"{up_col}_id"])
+            df[down_col] = df[down_col].fillna(self.fill_nans_value)
+            df[up_col] = df[up_col].fillna(self.fill_nans_value)
             new_cols += [down_col, up_col]
             self._log(f"Added features: {down_col}, {up_col}")
             self.feature_names_out_ = new_cols

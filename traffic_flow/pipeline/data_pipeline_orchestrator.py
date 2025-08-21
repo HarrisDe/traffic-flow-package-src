@@ -187,6 +187,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             "smooth_speeds":          bool(smooth_speeds),
         }
 
+        self.df_raw = loader.df_raw
+        self.df_raw_test = loader.df_raw_test
         # 2) Sensor encoding
         encoder = self._get_sensor_encoder()
         encoder.fit(df)

@@ -98,7 +98,7 @@ class TemporalLagFeatureAdder(BaseFeatureTransformer):
             else:
                 df[col] = shifted - df[self.value_col]
 
-            df[col].fillna(self.fill_nans_value, inplace=True)
+            df[col] = df[col].fillna(self.fill_nans_value)
             new_cols.append(col)
 
         # Record names for .export_state()
