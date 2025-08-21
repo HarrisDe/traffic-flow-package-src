@@ -20,7 +20,7 @@ COPY constraints.txt /tmp/constraints.txt
 
 # 6) Copy project metadata and source
 COPY pyproject.toml /app/pyproject.toml
-COPY traffic_flow/ /app/traffic_flow/
+COPY src/ /app/src/
 
 # 7) Install: pin with constraints, install your package + [service] extras
 #    (Gunicorn is already in your [project.optional-dependencies].)
