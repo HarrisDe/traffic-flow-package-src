@@ -9,17 +9,17 @@ from .inference.inference_pipeline import TrafficInferencePipeline
 try:
     from .pipeline.data_pipeline_orchestrator import TrafficDataPipelineOrchestrator
 except ImportError:
-    TrafficDataPipelineOrchestrator = None  # type: ignore[assignment]
+    TrafficDataPipelineOrchestrator = None  
 
 try:
     from .modeling.model_tuning import ModelTunerXGB
 except ImportError:
-    ModelTunerXGB = None  # type: ignore[assignment]
+    ModelTunerXGB = None  
 
 try:
     from .evaluation.model_comparison import ModelEvaluator
 except ImportError:
-    ModelEvaluator = None  # type: ignore[assignment]
+    ModelEvaluator = None  
 
 # Optional: package version
 try:
