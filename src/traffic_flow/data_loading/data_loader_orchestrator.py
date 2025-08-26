@@ -72,19 +72,6 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
     # IO
     # ------------------------------------------------------------------ #
     
-  
-    def _read_parquet_robust(self, path):
-        import pandas as pd, polars as pl, os
-        if os.path.isdir(path):
-            # Polars can read directory datasets too
-            df_pl = pl.read_parquet(str(path))
-        else:
-            df_pl = pl.read_parquet(str(path))
-        # Convert to pandas without Arrow extension dtypes
-        df = df_pl.to_pandas(use_pyarrow_extension_array=False)
-        # Make sure columns are plain strings
-        df.columns = [str(c) for c in df.columns]
-        return df
     
     def load_data_parquet(self) -> None:
         
@@ -177,7 +164,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
     def get_data(
         self,
         *,
-        window_size: int = 3,
+        window_size: int = 5,
         filter_on_train_only: bool = False,
         filter_extreme_changes: bool = True,
         smooth_speeds: bool = True,
@@ -326,3 +313,53 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
             )
             
             self.df[self.value_col] = self.df[self.value_col].astype(np.float32).to_numpy()
+
+
+    def convert_to_ts_dataframe(self,
+        *,
+        window_size: int = 3,
+        filter_on_train_only: bool = False,
+        filter_extreme_changes: bool = True,
+        smooth_speeds: bool = True,
+        use_median_instead_of_mean: bool = False,
+        relative_threshold: float = 0.7,
+        test_size: float = 1 / 3,
+        test_start_time: Optional[Union[str, pd.Timestamp]] = None,
+        diagnose_extreme_changes: bool = False,
+        add_gman_predictions: bool = False,
+        convert_gman_prediction_to_delta_speed: bool = True,
+    ) -> pd.DataFrame:
+        
+        df = self.get_data(window_size=window_size,
+            filter_on_train_only=filter_on_train_only,
+            filter_extreme_changes=filter_extreme_changes,
+            smooth_speeds=smooth_speeds,
+            use_median_instead_of_mean=use_median_instead_of_mean,
+            relative_threshold=relative_threshold,
+            test_size=test_size,
+            test_start_time=test_start_time,
+            diagnose_extreme_changes=diagnose_extreme_changes,
+            add_gman_predictions=add_gman_predictions,
+            convert_gman_prediction_to_delta_speed=convert_gman_prediction_to_delta_speed,
+        )
+        
+        # wide values: date index, one column per sensor
+        values_wide = (
+            df.pivot(index=self.datetime_col, columns=self.sensor_col, values=self.value_col)
+            .sort_index()
+        )
+
+        # single test flag per date (identical across sensors)
+        test_per_date = (
+            df[[self.datetime_col, "test_set"]]
+            .drop_duplicates(subset=self.datetime_col, keep="last")
+            .set_index(self.datetime_col)
+        )
+
+        out = values_wide.join(test_per_date).reset_index()
+        out.columns.name = None
+
+        # ensure 'test_set' is the last column
+        out = out[[c for c in out.columns if c != "test_set"] + ["test_set"]]
+
+        return out
