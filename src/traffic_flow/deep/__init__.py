@@ -1,21 +1,19 @@
-from .data_interface import DeepTFDataInterface
+from .data_interface import TrafficDeepSplitInterface
 from .horizons import parse_horizons
-from .windowing import TFWindowedDatasetBuilder
+from .windowing import TFMultiSeriesSeq2OneBuilder
 from .modeling import LSTMBuilder
 from .training import TFTrainer
 from .label_scaling import LabelScaler
-from ..common.results import assemble_results_dataframe
-from .experiment import DeepTFExperiment, DataCfg, ModelCfg
+#from .experiment import DeepTFExperiment, DataCfg, ModelCfg
 from  .custom_features import make_demand_context_feature_fn
 
-__all__ = ["DeepTFDataInterface", 
+__all__ = ["TrafficDeepSplitInterface", 
            "parse_horizons", 
-           "TFWindowedDatasetBuilder",
+           "TFMultiSeriesSeq2OneBuilder",
            "LSTMBuilder",
               "TFTrainer",
               "LabelScaler",
-              "assemble_results_dataframe",
-             "DeepTFExperiment",
+           #  "DeepTFExperiment",
              "DataCfg",
                "ModelCfg",
                 "make_demand_context_feature_fn"

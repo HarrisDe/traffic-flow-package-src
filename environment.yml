@@ -18,3 +18,10 @@ dependencies:
   - gunicorn=21.2.0
   - requests>=2.31,<3 
   - seaborn>=0.13,<0.14
+  - pip:
+      # Linux (NVIDIA): TF with bundled CUDA/cuDNN
+      - 'tensorflow[and-cuda]>=2.16,<2.19; platform_system == "Linux"'
+      # macOS (both Apple silicon & Intel): base TF
+      - 'tensorflow>=2.16,<2.19; platform_system == "Darwin"'
+      # macOS GPU via Metal plugin
+      - 'tensorflow-metal>=1.1; platform_system == "Darwin"'

@@ -1,128 +1,95 @@
 
-# energy_forecasting/deep_tf/experiment.py
+# traffic_flow/deep/experiment.py
 from __future__ import annotations
 from dataclasses import dataclass, asdict
-from typing import Dict, Optional, Sequence
-import json
-import os
-import uuid
+from typing import Dict, Optional, Iterable, Tuple, List
+import json, os, uuid
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-from ..common.utils import LoggingMixin
-from .data_interface import DeepTFDataInterface
-from .windowing import TFWindowedDatasetBuilder
+from ..utils.helper_utils import LoggingMixin
+from ..data_loading.data_loader_orchestrator import InitialTrafficDataLoader
+from .data_interface import TrafficDeepSplitInterface   # your splitter that builds target-index splits
+from .windowing import TFMultiSeriesSeq2OneBuilder
 from .label_scaling import LabelScaler
 from .modeling import LSTMBuilder
 from .training import TFTrainer
-from ..common.results import assemble_results_dataframe
-from ..evaluation import ModelEvaluator
+from .evaluation import ModelEvaluator, assemble_results_dataframe
 from .custom_features import make_demand_context_feature_fn
 
-# ---------------------- configuration containers ---------------------- #
 
 @dataclass(frozen=True)
 class DataCfg:
-    """
-    Configuration of data-related choices for a deep TF run.
-
-    Fields
-    ------
-    seq_len : lookback length (window length) used to build each training example
-    horizons : forecast horizons to predict (e.g. ("1h",) or ("1d",) or ("1w",))
-    feature_mode : "value_only" or "value_plus_time" for cyclic time encodings
-    batch_size : batch size for tf.data pipelines
-    val_fraction_of_train : fraction of the pre-test portion reserved as validation
-    target_mode : "absolute" for direct MW, "delta" for future change vs window end
-    """
-    seq_len: int = 168
-    horizons: Sequence[str] = ("1h",)
-    feature_mode: str = "value_plus_time"
+    seq_len: int = 30
+    horizon_minutes: int = 15
+    feature_mode: str = "value_plus_time"        # value_only | value_plus_time
     batch_size: int = 256
-    val_fraction_of_train: float = 0.1
-    target_mode: str = "delta"  # "absolute" | "delta"
-    
-    # demand-context feature toggles/params (JSON-friendly)
-    add_demand_context: bool = True
-    dc_rolling_hours: int = 168            # ~1 week
-    dc_dev_last_hours: int = 24            # previous day
-    dc_dev_week_hours: int = 168           # previous week same hour
-    dc_add_zscore: bool = True
-    dc_add_dev_last: bool = True
-    dc_add_dev_week: bool = True
-    dc_add_flags: bool = True
+    val_fraction_of_train: float = 0.3
+    target_mode: str = "delta"                   # absolute | delta
 
+    # global demand-context (minutes)
+    add_demand_context: bool = True
+    dc_windows_minutes: Tuple[int, int] = (60, 1440)
+    dc_add_deviation: bool = True
+    dc_add_zscore: bool = True
+    dc_add_ratio: bool = False
+    dc_add_flags: bool = True
+    holiday_dates: Optional[Iterable[str]] = None
+
+    # loader knobs
+    smooth_series: bool = True
+    filter_extreme_changes: bool = True
+    filter_on_train_only: bool = False
+    use_median_instead_of_mean: bool = False
+    relative_threshold: float = 0.7
+    test_size: float = 1/3
+    test_start_time: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ModelCfg:
-    """
-    LSTM architecture and training hyperparameters.
-
-    Fields
-    ------
-    units : hidden size for each LSTM layer
-    n_layers : number of stacked LSTM layers
-    dropout : dropout rate after each LSTM
-    use_norm : whether to apply a Normalization layer on inputs
-    add_dense : whether to add a Dense head after the last LSTM
-    dense_units : width of the Dense head (only if add_dense=True)
-    dense_activation : activation for Dense head
-    epochs, patience, learning_rate, loss, optimizer : standard Keras training knobs
-    """
-    units: int = 32
+    units: int = 64
     n_layers: int = 2
     dropout: float = 0.2
     use_norm: bool = True
-
     add_dense: bool = False
     dense_units: int = 16
     dense_activation: Optional[str] = "relu"
-
-    epochs: int = 200
-    patience: int = 20
+    epochs: int = 50
+    patience: int = 10
     learning_rate: float = 3e-4
-    loss: str = "huber"        # "huber" | "mae" | "mse"
+    loss: str = "huber"
     optimizer: str = "adam"
 
 
-class DeepTFExperiment(LoggingMixin):
-    """
-    High-level runner for a single deep-learning experiment (one configured horizon set).
+def adapt_single_series_context_fn(single_series_fn, *, datetime_col: str = "date", ref_col: str = "value_ref"):
+    def _wide_fn(df_wide: pd.DataFrame) -> pd.DataFrame:
+        sensors = [c for c in df_wide.columns if c not in (datetime_col, "test_set")]
+        tmp = pd.DataFrame({
+            datetime_col: pd.to_datetime(df_wide[datetime_col]),
+            ref_col: df_wide[sensors].mean(axis=1).astype(np.float32)
+        }, index=df_wide.index)
+        return single_series_fn(tmp)
+    _wide_fn.__name__ = f"wide_{getattr(single_series_fn, '__name__', 'custom')}"
+    return _wide_fn
 
-    Pipeline
-    --------
-    1) Load & clean using DeepTFDataInterface
-    2) Window into train/val/test using TFWindowedDatasetBuilder (absolute or delta targets)
-    3) Scale labels per-output using LabelScaler
-    4) Build model via LSTMBuilder.from_dataset (optionally with Dense head)
-    5) Train via TFTrainer (EarlyStopping + optional LR schedule)
-    6) Predict on test, unscale to MW, assemble a wide results DataFrame,
-       then evaluate **for the configured horizon(s)** using ModelEvaluator
 
-    Artifacts written under: artifacts_dir / run_id
-    - history.json, metrics.json, predictions.parquet, config.json
-    Optionally appends a summary row to a CSV (for sweeps).
-    """
-
+class TrafficDeepExperiment(LoggingMixin):
     def __init__(
         self,
         *,
-        data_path: str,
+        data_path: str,                         # parquet for InitialTrafficDataLoader
         artifacts_dir: str = "./results",
-        datetime_col: str = "Datetime",
-        value_col: str = "PJME_MW",
+        datetime_col: str = "date",
         disable_logs: bool = False,
     ) -> None:
         super().__init__(disable_logs=disable_logs)
         self.data_path = data_path
         self.artifacts_dir = artifacts_dir
         self.datetime_col = datetime_col
-        self.value_col = value_col
         os.makedirs(self.artifacts_dir, exist_ok=True)
 
-    # ------------------------------- main API ------------------------------- #
     def run(
         self,
         *,
@@ -132,125 +99,79 @@ class DeepTFExperiment(LoggingMixin):
         results_csv: Optional[str] = None,
         save_predictions: bool = True,
     ) -> Dict[str, object]:
-        """
-        Execute a full training→prediction→evaluation cycle.
 
-        Returns
-        -------
-        dict with keys:
-          - 'preds_df' : wide DataFrame with per-horizon y_true*/y_pred* columns
-          - 'summary'  : flat dict of metrics + configs + run_id (suitable for CSV)
-          - 'run_id'   : artifact folder name under artifacts_dir
-          - 'paths'    : dict of artifact file paths
-        """
         run_id = run_name or uuid.uuid4().hex[:8]
         paths = self._paths(run_id)
-
-        # Persist configs used (for reproducibility)
-        cfg_payload = {
+        self._dump_json(paths["cfg"], {
             "data_cfg": asdict(data_cfg),
             "model_cfg": asdict(model_cfg),
             "run_id": run_id,
-        }
-        self._dump_json(paths["cfg"], cfg_payload)
+        })
 
-        # 1) Load & clean
-        iface = DeepTFDataInterface(
-            file_path=self.data_path,
-            datetime_col=self.datetime_col,
-            value_col=self.value_col,
-            disable_logs=self.disable_logs,
-        )
-        df_clean = iface.prepare_clean_frame(
-            window_size=3,
-            filter_on_train_only=False,
-            filter_extreme_changes=True,
-            smooth_series=True,                 # keep or turn off based on your preference
-            use_median_instead_of_mean=False,
-            relative_threshold=0.7,
-            test_size=1 / 3,
-            test_start_time=None,
+        # 1) Wide dataframe (date + sensors + test_set)
+        loader = InitialTrafficDataLoader(self.data_path, disable_logs=self.disable_logs)
+        df_wide = loader.convert_to_ts_dataframe(
+            window_size=5,
+            filter_on_train_only=data_cfg.filter_on_train_only,
+            filter_extreme_changes=data_cfg.filter_extreme_changes,
+            smooth_speeds=data_cfg.smooth_series,
+            use_median_instead_of_mean=data_cfg.use_median_instead_of_mean,
+            relative_threshold=data_cfg.relative_threshold,
+            test_size=data_cfg.test_size,
+            test_start_time=data_cfg.test_start_time,
             diagnose_extreme_changes=False,
         )
-        splits = iface.build_splits(
-            use_loader_test_split=True,
-            val_fraction_of_train=data_cfg.val_fraction_of_train,
-        )
+
+        # 2) Target-time splits
+        splitter = TrafficDeepSplitInterface(datetime_col=self.datetime_col, test_col="test_set", disable_logs=self.disable_logs)
+        splitter.attach_frame(df_wide)
+        splits = splitter.build_target_splits(val_fraction_of_train=data_cfg.val_fraction_of_train)
+
+        # 3) Global demand-context → adapter over reference series
         custom_fn = None
         if data_cfg.add_demand_context:
-            
-            dc_windows = sorted({
-                    int(data_cfg.dc_rolling_hours),
-                    int(data_cfg.dc_dev_last_hours),
-                    int(data_cfg.dc_dev_week_hours),
-                })
-
-            # custom_fn = make_demand_context_feature_fn(
-            #     datetime_col=self.datetime_col,
-            #     value_col=self.value_col,
-            #     rolling_hours=data_cfg.dc_rolling_hours,
-            #     dev_last_hours=data_cfg.dc_dev_last_hours,
-            #     dev_week_hours=data_cfg.dc_dev_week_hours,
-            #     add_zscore=data_cfg.dc_add_zscore,
-            #     add_dev_last=data_cfg.dc_add_dev_last,
-            #     add_dev_week=data_cfg.dc_add_dev_week,
-            #     add_flags=data_cfg.dc_add_flags,
-            # )
-            
-            custom_fn = make_demand_context_feature_fn(
+            dc_fn_single = make_demand_context_feature_fn(
                 datetime_col=self.datetime_col,
-                value_col=self.value_col,
-                windows=tuple(dc_windows),
-                add_deviation=True,                        # always useful; keep on
+                value_col="value_ref",
+                windows=tuple(int(x) for x in data_cfg.dc_windows_minutes),
+                add_deviation=bool(data_cfg.dc_add_deviation),
                 add_zscore=bool(data_cfg.dc_add_zscore),
-                add_ratio=True,                           # optional; keep off for now
-                min_periods=None,                          # default: each window size
+                add_ratio=bool(data_cfg.dc_add_ratio),
+                min_periods=None,
                 include_business_hour=bool(data_cfg.dc_add_flags),
                 include_weekend_flag=bool(data_cfg.dc_add_flags),
-                holiday_dates=None,                        # plug a list if you have holidays
+                holiday_dates=data_cfg.holiday_dates,
             )
-            # log the config attached by the factory
-            cfg = getattr(custom_fn, "_dc_config", {})
-            self._log(f"[experiment] demand_context_features enabled with {cfg}")
-            
-        # 2) Window datasets (handles absolute|delta)
-        win = TFWindowedDatasetBuilder(
+            custom_fn = adapt_single_series_context_fn(dc_fn_single, datetime_col=self.datetime_col, ref_col="value_ref")
+
+        # 4) Windowing
+        win = TFMultiSeriesSeq2OneBuilder(
             datetime_col=self.datetime_col,
-            value_col=self.value_col,
-            seq_len=data_cfg.seq_len,
-            horizons=list(data_cfg.horizons),
+            seq_len=int(data_cfg.seq_len),
+            horizon_minutes=int(data_cfg.horizon_minutes),
             stride=1,
             feature_mode=data_cfg.feature_mode,
             custom_feature_fn=custom_fn,
             target_mode=data_cfg.target_mode,
+            batch_size=int(data_cfg.batch_size),
+            dropna=True,
+            disable_logs=self.disable_logs,
         )
-        train_ds, meta_train = win.build_split(
-            df_clean, split=splits["train"],
-            batch_size=data_cfg.batch_size, shuffle=True, cache=True
-        )
-        val_ds, meta_val = win.build_split(
-            df_clean, split=splits["val"],
-            batch_size=data_cfg.batch_size, shuffle=False, cache=True
-        )
-        test_ds, meta_test = win.build_split(
-            df_clean, split=splits["test"],
-            batch_size=data_cfg.batch_size, shuffle=False, cache=True
-        )
+        ds_train, ds_val, ds_test, meta_all = win.make_datasets(df_wide, splits)
 
-        total_feats = len(meta_train["feature_cols"])
-        custom_feats = meta_train.get("custom_feature_cols", []) or []
-        preview = ", ".join(custom_feats[:8])
-        more = "" if len(custom_feats) <= 8 else f" (+{len(custom_feats)-8} more)"
-        self._log(f"[experiment] feature_cols: total={total_feats}, custom={len(custom_feats)} → {preview}{more}")
-        
-        # 3) Scale labels
-        scaler = LabelScaler.from_dataset(train_ds)
-        train_ds_s = scaler.scale_ds(train_ds)
-        val_ds_s   = scaler.scale_ds(val_ds)
-        test_ds_s  = scaler.scale_ds(test_ds)
+        # Also keep dense arrays (needed for joined export)
+        X_all, y_all, base_times, base_vals, target_times, sensor_cols, raw_meta = win.make_arrays(df_wide)
+        u = raw_meta["target_idx"]
+        h_label: str = meta_all["h_labels"][0]
 
-        # 4) Build model
-        model, builder = LSTMBuilder.from_dataset(
+        # 5) Label scaling (per-sensor)
+        scaler = LabelScaler.from_dataset(ds_train)
+        train_ds_s = scaler.scale_ds(ds_train)
+        val_ds_s   = scaler.scale_ds(ds_val)  if ds_val  is not None else None
+        test_ds_s  = scaler.scale_ds(ds_test) if ds_test is not None else None
+
+        # 6) Build & train
+        model, _ = LSTMBuilder.from_dataset(
             train_ds_s,
             units=model_cfg.units,
             n_layers=model_cfg.n_layers,
@@ -261,13 +182,11 @@ class DeepTFExperiment(LoggingMixin):
             dense_activation=model_cfg.dense_activation,
             adapt_batches=None,
         )
-
-        # 5) Compile + train
         trainer = TFTrainer(model)
         trainer.compile(
             loss=model_cfg.loss,
             optimizer=model_cfg.optimizer,
-            metrics=["mae"],  # overall MAE on standardized outputs
+            metrics=["mae"],
             learning_rate=model_cfg.learning_rate,
         )
         history = trainer.fit(
@@ -281,56 +200,137 @@ class DeepTFExperiment(LoggingMixin):
         )
         self._dump_json(paths["history"], history.history)
 
-        # 6) Predict (unscale), assemble results, evaluate
-        y_pred_s = trainer.predict(test_ds_s)
-        y_pred   = scaler.unscale(y_pred_s)
+        # 7) Predict on TEST, make per-sensor results with assemble_results_dataframe
+        #    and evaluate with ModelEvaluator (drop MASE keys).
+        def _mask(r):
+            i0, i1 = r
+            if i0 < 0 or i1 < 0 or i1 < i0:
+                return np.zeros_like(u, dtype=bool)
+            return (u >= i0) & (u <= i1)
 
-        res_df = assemble_results_dataframe(
-            meta=meta_test,
-            y_pred=y_pred,
-            datetime_col=self.datetime_col,
-            value_col=self.value_col,
-        )
+        m_te = _mask(splits["test"])
+        if not m_te.any():
+            self._dump_json(paths["metrics"], {"note": "no test windows"})
+            return {"preds_df": None, "summary": {"run_id": run_id}, "run_id": run_id, "paths": paths}
+
+        X_te = X_all[m_te]
+        y_te = y_all[m_te]             # (N_te, F)  in model target space
+        b_te = base_vals[m_te]         # (N_te, F)
+        t_te = pd.to_datetime(target_times[m_te])
+
+        y_pred_s = model.predict(X_te, verbose=0)       # scaled space
+        y_pred   = scaler.unscale(y_pred_s)             # back to model target space
+
+        # If model target is delta ⇒ reconstruct absolute; otherwise use abs directly
+        if data_cfg.target_mode == "delta":
+            y_true_abs = b_te + y_te
+            y_pred_abs = b_te + y_pred
+        else:
+            y_true_abs = y_te
+            y_pred_abs = y_pred
+
+        # Build one wide predictions frame by merging per-sensor assembled frames
+        wide_parts: List[pd.DataFrame] = []
+        metrics_list: List[Dict[str, float]] = []
+
+        for k, sensor in enumerate(sensor_cols):
+            # Per-sensor meta in the shape expected by assemble_results_dataframe
+            meta_sensor = {
+                "y": y_te[:, [k]],                        # (N_te, 1)
+                "base_times": base_times[m_te],           # (N_te,)
+                "base_values": b_te[:, k],                # (N_te,)
+                "pred_times": {h_label: t_te},            # dict[label] -> (N_te,)
+                "h_labels": [h_label],
+                "target_mode": data_cfg.target_mode,
+            }
+            # Per-sensor predictions in model target space
+            y_pred_sensor = y_pred[:, [k]]               # (N_te, 1)
+
+            df_res = assemble_results_dataframe(
+                meta=meta_sensor,
+                y_pred=y_pred_sensor,
+                datetime_col=self.datetime_col,
+                target_mode=data_cfg.target_mode,
+                value_col=sensor,                         # base/current value col name
+            )
+
+            # Keep absolute columns for this horizon and rename to <sensor> / <sensor>_pred
+            pt_col = f"prediction_time_{h_label}"
+            if pt_col not in df_res.columns:              # fallback name from your helper
+                pt_col = "prediction_time"
+            out_k = pd.DataFrame({
+                "prediction_time": pd.to_datetime(df_res[pt_col]),
+                sensor:           df_res.get(f"y_true_abs_{h_label}", df_res[f"y_true_delta_{h_label}"] + df_res[sensor]),
+                f"{sensor}_pred": df_res.get(f"y_pred_abs_{h_label}", df_res[f"y_pred_delta_{h_label}"] + df_res[sensor]),
+            })
+
+            wide_parts.append(out_k)
+
+            # Evaluate (absolute space); drop MASE keys afterwards
+            ev = ModelEvaluator(
+                df_res=df_res.assign(test_set=True),    # mark rows as test
+                horizon=h_label,
+                datetime_col=self.datetime_col,
+                value_col=sensor,
+                disable_logs=True,
+            )
+            m_mod, m_nv = ev.evaluate(rounding=3)
+            # attach sensor id for aggregation
+            naive_row = {f"naive_{k[:-6]}": v for k, v in m_nv.items() if k.endswith("_naive")}
+            mrow = {**m_mod, **naive_row, "sensor": sensor}
+            mrow["sensor"] = sensor
+            metrics_list.append(mrow)
+
+        # Merge per-sensor frames on prediction_time
+        preds_wide = wide_parts[0]
+        for part in wide_parts[1:]:
+            preds_wide = preds_wide.merge(part, on="prediction_time", how="outer")
 
         if save_predictions:
-            res_df.to_parquet(paths["preds"], index=False)
+            preds_wide.to_parquet(paths["preds"], index=False)
 
-        # Evaluate for the configured horizon(s).
-        h_label = meta_test["h_labels"][0]
-        me = ModelEvaluator(
-            df_res=res_df,
-            horizon=h_label,
-            datetime_col=self.datetime_col,
-            value_col=self.value_col,
-            disable_logs=True,
-        )
-        metrics, naive = me.evaluate(rounding=3)
+        # Aggregate metrics across sensors (mean)
+        met_df = pd.DataFrame(metrics_list).set_index("sensor")
+        agg = met_df.mean(numeric_only=True).to_dict()
 
-        all_metrics = {**metrics, **{f"naive_{k}": v for k, v in naive.items()}}
-        self._dump_json(paths["metrics"], all_metrics)
-        self._log(f"[deep_tf] Run {run_id}: metrics → {paths['metrics']}")
-
-        # Optional: append summary row to CSV
-        summary_row = {
+        summary = {
             "run_id": run_id,
-            **{f"data.{k}": v for k, v in asdict(data_cfg).items()},
-            **{f"model.{k}": v for k, v in asdict(model_cfg).items()},
-            **all_metrics,
-            "data.feature_count": total_feats,
-            "data.custom_feature_count": len(custom_feats),
-            "data.custom_feature_sample": ";".join(custom_feats[:12]),
+            "horizon_minutes": int(data_cfg.horizon_minutes),
+            "target_mode": data_cfg.target_mode,
+            "seq_len": int(data_cfg.seq_len),
+            "features_per_step": int(len(meta_all["feature_cols"])),
+            "n_sensors": int(len(sensor_cols)),
+            "n_train_windows": int(((u >= splits["train"][0]) & (u <= splits["train"][1])).sum()) if splits["train"][0] >= 0 else 0,
+            "n_val_windows":   int(((u >= splits["val"][0])   & (u <= splits["val"][1])).sum())   if splits["val"][0]   >= 0 else 0,
+            "n_test_windows":  int(m_te.sum()),
+            # model metrics (averaged over sensors)
+            "MAE":   float(agg.get("MAE", np.nan)),
+            "MedianAE": float(agg.get("MedianAE", np.nan)),
+            "RMSE":  float(agg.get("RMSE", np.nan)),
+            "MAPE":  float(agg.get("MAPE", np.nan)),
+            "SMAPE": float(agg.get("SMAPE", np.nan)),
+            # naive (averaged)
+            "naive_MAE":   float(agg.get("naive_MAE", np.nan)),
+            "naive_MedianAE": float(agg.get("naive_MedianAE", np.nan)),
+            "naive_RMSE":  float(agg.get("naive_RMSE", np.nan)),
+            "naive_MAPE":  float(agg.get("naive_MAPE", np.nan)),
+            "naive_SMAPE": float(agg.get("naive_SMAPE", np.nan)),
         }
+        self._dump_json(paths["metrics"], summary)
+
+        # Optional: append to CSV
         if results_csv:
-            self._append_row(results_csv, summary_row)
+            row = {
+                "run_id": run_id,
+                **{f"data.{k}": v for k, v in asdict(data_cfg).items()},
+                **{f"model.{k}": v for k, v in asdict(model_cfg).items()},
+                **summary,
+            }
+            self._append_row(results_csv, row)
 
-        return {
-            "preds_df": res_df,
-            "summary": summary_row,
-            "run_id": run_id,
-            "paths": paths,
-        }
+        return {"preds_df": preds_wide, "summary": summary, "run_id": run_id, "paths": paths}
 
-    # ------------------------------- helpers ------------------------------- #
+    # --------------- helpers ---------------
     def _paths(self, run_id: str) -> Dict[str, str]:
         base = os.path.join(self.artifacts_dir, run_id)
         os.makedirs(base, exist_ok=True)
@@ -345,42 +345,17 @@ class DeepTFExperiment(LoggingMixin):
     @staticmethod
     def _dump_json(path: str, obj: Dict) -> None:
         with open(path, "w") as f:
-            json.dump(obj, f, indent=2, default=_json_fallback)
+            json.dump(obj, f, indent=2)
 
     @staticmethod
     def _append_row(csv_path: str, row: Dict[str, object]) -> None:
-        """
-        Append a single row to a CSV, creating it if missing. New columns are added
-        without failing; existing rows keep NaN for new keys.
-        """
         df_row = pd.DataFrame([row])
         if not os.path.exists(csv_path):
-            df_row.to_csv(csv_path, index=False)
-            return
-
+            df_row.to_csv(csv_path, index=False); return
         old = pd.read_csv(csv_path)
-        # align schemas (union of columns)
         for c in df_row.columns:
-            if c not in old.columns:
-                old[c] = np.nan
+            if c not in old.columns: old[c] = np.nan
         for c in old.columns:
-            if c not in df_row.columns:
-                df_row[c] = np.nan
-
-        out = pd.concat(
-            [old[sorted(old.columns)], df_row[sorted(df_row.columns)]],
-            ignore_index=True
-        )
+            if c not in df_row.columns: df_row[c] = np.nan
+        out = pd.concat([old[sorted(old.columns)], df_row[sorted(df_row.columns)]], ignore_index=True)
         out.to_csv(csv_path, index=False)
-
-
-def _json_fallback(o):
-    """Make numpy types JSON-serializable (minor robustness for history dicts)."""
-    import numpy as _np
-    if isinstance(o, (_np.integer,)):
-        return int(o)
-    if isinstance(o, (_np.floating,)):
-        return float(o)
-    if isinstance(o, (_np.ndarray,)):
-        return o.tolist()
-    raise TypeError(f"Object of type {type(o)} is not JSON serializable")

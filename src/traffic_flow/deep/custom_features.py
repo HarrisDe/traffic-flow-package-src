@@ -3,6 +3,9 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+
+
+
 def make_demand_context_feature_fn(
     *,
     datetime_col: str = "Datetime",
@@ -112,3 +115,77 @@ def make_demand_context_feature_fn(
 
     return _feature_fn
 
+def adapt_single_series_context_fn(single_series_fn, *, datetime_col: str = "date", ref_col: str = "value_ref"):
+    """
+    Wrap a callable(df_single)->DataFrame into df_wide->DataFrame by
+    creating a reference series (row-wise mean across sensors).
+    """
+    def _wide_fn(df_wide: pd.DataFrame) -> pd.DataFrame:
+        sensors = [c for c in df_wide.columns if c not in (datetime_col, "test_set")]
+        tmp = pd.DataFrame({
+            datetime_col: pd.to_datetime(df_wide[datetime_col]),
+            ref_col: df_wide[sensors].mean(axis=1).astype(np.float32)
+        }, index=df_wide.index)
+        # Call the single-series function (it must be configured to expect ref_col)
+        return single_series_fn(tmp)
+    _wide_fn.__name__ = f"wide_{getattr(single_series_fn, '__name__', 'custom')}"
+    return _wide_fn
+
+def make_per_sensor_context_fn(
+    *,
+    datetime_col: str = "date",
+    windows: Iterable[int] = (60, 1440),  # minutes: 1h, 1d 1-min data
+    add_deviation: bool = True,
+    add_zscore: bool = True,
+    add_ratio: bool = False,
+    min_periods: Optional[int] = None,
+    include_business_hour: bool = True,
+    include_weekend_flag: bool = True,
+) -> callable:
+    """
+    Returns df_wide -> DataFrame (numeric) with per-sensor rolling features.
+    Windows are in *rows* (minutes for your data).
+    """
+    windows = tuple(int(w) for w in windows)
+
+    def _fn(df_wide: pd.DataFrame) -> pd.DataFrame:
+        dt = pd.to_datetime(df_wide[datetime_col], errors="coerce")
+        sensors = [c for c in df_wide.columns if c not in (datetime_col, "test_set")]
+        vals = df_wide[sensors].astype(np.float32)
+
+        out = []
+
+        for w in windows:
+            mp = w if (min_periods is None) else int(min_periods)
+            mu = vals.rolling(window=w, min_periods=mp).mean()
+            sd = vals.rolling(window=w, min_periods=mp).std()
+
+            if add_deviation:
+                dev = (vals - mu).astype(np.float32)
+                dev.columns = [f"{c}__dev_{w}m" for c in sensors]
+                out.append(dev.fillna(0.0))
+
+            if add_zscore:
+                z = (vals - mu) / sd.replace(0.0, np.nan)
+                z = z.astype(np.float32)
+                z.columns = [f"{c}__z_{w}m" for c in sensors]
+                out.append(z.fillna(0.0))
+
+            if add_ratio:
+                r = vals / mu.replace(0.0, np.nan)
+                r = r.astype(np.float32)
+                r.columns = [f"{c}__ratio_{w}m" for c in sensors]
+                out.append(r.fillna(0.0))
+
+        # light calendar flags (global, numeric)
+        flags = pd.DataFrame(index=df_wide.index)
+        if include_business_hour:
+            flags["is_business_hour"] = ((dt.dt.hour >= 8) & (dt.dt.hour <= 18)).astype("float32")
+        if include_weekend_flag:
+            flags["is_weekend"] = (dt.dt.dayofweek >= 5).astype("float32")
+        out.append(flags)
+
+        return pd.concat(out, axis=1) if out else pd.DataFrame(index=df_wide.index)
+
+    _fn.__name__ = "per_sensor_context_features"
+    return _fn
