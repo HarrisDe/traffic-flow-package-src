@@ -49,19 +49,36 @@ class DataCfg:
 
 @dataclass(frozen=True)
 class ModelCfg:
+    """
+    All LSTMBuilder knobs + training hyperparameters.
+    """
+
+    # ---- LSTMBuilder core ----
     units: int = 64
     n_layers: int = 2
     dropout: float = 0.2
-    use_norm: bool = True
+    use_norm: bool = True                 # tf.keras.layers.Normalization on inputs
     add_dense: bool = False
-    dense_units: int = 16
+    dense_units: int = 128
     dense_activation: Optional[str] = "relu"
+    adapt_batches: Optional[int] = None   # if not None, run Normalization.adapt() on N batches
+
+    # ---- LSTMBuilder extras ----
+    bidirectional: bool = True
+    recurrent_dropout: float = 0.1
+    conv_frontend: bool = True
+    conv_filters: int = 64
+    conv_kernel: int = 5                  # typical odd kernel (3/5/7)
+    layer_norm_in_lstm: bool = True
+    attention_pooling: bool = True
+    residual_head: bool = True
+
+    # ---- training ----
     epochs: int = 50
     patience: int = 10
     learning_rate: float = 3e-4
-    loss: str = "huber"
+    loss: str = "huber"                   # "huber" | "mae" | "mse"
     optimizer: str = "adam"
-
 
 def adapt_single_series_context_fn(single_series_fn, *, datetime_col: str = "date", ref_col: str = "value_ref"):
     def _wide_fn(df_wide: pd.DataFrame) -> pd.DataFrame:
@@ -173,6 +190,7 @@ class TrafficDeepExperiment(LoggingMixin):
         # 6) Build & train
         model, _ = LSTMBuilder.from_dataset(
             train_ds_s,
+            # --- core ---
             units=model_cfg.units,
             n_layers=model_cfg.n_layers,
             dropout=model_cfg.dropout,
@@ -180,8 +198,18 @@ class TrafficDeepExperiment(LoggingMixin):
             add_dense=model_cfg.add_dense,
             dense_units=model_cfg.dense_units,
             dense_activation=model_cfg.dense_activation,
-            adapt_batches=None,
+            adapt_batches=model_cfg.adapt_batches,   # <— was None; now uses cfg
+            # --- extras ---
+            bidirectional=model_cfg.bidirectional,
+            recurrent_dropout=model_cfg.recurrent_dropout,
+            conv_frontend=model_cfg.conv_frontend,
+            conv_filters=model_cfg.conv_filters,
+            conv_kernel=model_cfg.conv_kernel,
+            layer_norm_in_lstm=model_cfg.layer_norm_in_lstm,
+            attention_pooling=model_cfg.attention_pooling,
+            residual_head=model_cfg.residual_head,
         )
+
         trainer = TFTrainer(model)
         trainer.compile(
             loss=model_cfg.loss,

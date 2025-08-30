@@ -1,17 +1,50 @@
 # traffic_flow/deep/windowing.py
 from __future__ import annotations
-from typing import Dict, List, Tuple, Optional, Callable
+from typing import Dict, List, Tuple, Optional, Callable, Iterable
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
-
 from ..utils.helper_utils import LoggingMixin
+
+def _time_encodings_from_dt(
+    dt: pd.Series,
+    components: Iterable[str] = ("minute","hour","dow","mon"),
+    *,
+    prefix: str = ""
+) -> pd.DataFrame:
+    """Return sin/cos cyclic encodings for selected calendar components."""
+    components = tuple(components)
+    out = pd.DataFrame(index=dt.index)
+
+    if "minute" in components:
+        m = dt.dt.minute.to_numpy()
+        out[f"{prefix}min_sin"] = np.sin(2*np.pi*m/60)
+        out[f"{prefix}min_cos"] = np.cos(2*np.pi*m/60)
+
+    if "hour" in components:
+        h = dt.dt.hour.to_numpy()
+        out[f"{prefix}hour_sin"] = np.sin(2*np.pi*h/24)
+        out[f"{prefix}hour_cos"] = np.cos(2*np.pi*h/24)
+
+    if "dow" in components:
+        d = dt.dt.dayofweek.to_numpy()
+        out[f"{prefix}dow_sin"] = np.sin(2*np.pi*d/7)
+        out[f"{prefix}dow_cos"] = np.cos(2*np.pi*d/7)
+
+    if "mon" in components:
+        mo = dt.dt.month.to_numpy()
+        out[f"{prefix}mon_sin"] = np.sin(2*np.pi*mo/12)
+        out[f"{prefix}mon_cos"] = np.cos(2*np.pi*mo/12)
+
+    return out.astype(np.float32)
+
 
 class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
     """
     Multiseries (e.g. 204 sensors) → seq2one builder.
-    Produces single-horizon targets at t+H (minutes), for ALL sensors.
+    - History-time encodings can include minute/hour/dow/mon.
+    - **Prediction-time** encodings at t+H are also added (broadcast over the L steps).
     """
 
     def __init__(
@@ -24,6 +57,9 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
         target_mode: str = "delta",                  # "delta" | "absolute"
         feature_mode: str = "value_plus_time",       # "value_only" | "value_plus_time"
         custom_feature_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
+        # NEW: control which calendar features are used
+        time_components: Iterable[str] = ("minute","hour","dow"),
+        pred_time_components: Iterable[str] = ("minute","hour","dow"),
         batch_size: int = 256,
         dropna: bool = True,
         disable_logs: bool = False,
@@ -42,14 +78,17 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
         self.target_mode = target_mode
         self.feature_mode = feature_mode
         self.custom_feature_fn = custom_feature_fn
+        self.time_components = tuple(time_components)
+        self.pred_time_components = tuple(pred_time_components)
         self.batch_size = int(batch_size)
         self.dropna = bool(dropna)
 
         # resolved later
         self.sensor_cols_: List[str] = []
         self.time_feature_cols_: List[str] = []
+        self.pred_time_feature_cols_: List[str] = []
         self.custom_feature_cols_: List[str] = []
-        self.feature_cols_: List[str] = []
+        self.feature_cols_: List[str] = []   # final order in X (history + pred-time + custom)
 
     # ---------- internals ----------
     def _split_columns(self, df: pd.DataFrame) -> Tuple[List[str], str]:
@@ -60,16 +99,6 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
         if not sensor_cols:
             raise ValueError("No sensor columns found.")
         return sensor_cols, dt_col
-
-    def _build_time_encodings(self, dt: pd.Series) -> pd.DataFrame:
-        hour = dt.dt.hour.to_numpy()
-        dow  = dt.dt.dayofweek.to_numpy()
-        out = pd.DataFrame(index=dt.index)
-        out["hour_sin"] = np.sin(2 * np.pi * hour / 24)
-        out["hour_cos"] = np.cos(2 * np.pi * hour / 24)
-        out["dow_sin"]  = np.sin(2 * np.pi * dow  / 7)
-        out["dow_cos"]  = np.cos(2 * np.pi * dow  / 7)
-        return out.astype(np.float32)
 
     def _build_feature_matrix(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str]]:
         d = df.copy()
@@ -84,7 +113,7 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
         self.custom_feature_cols_ = []
 
         if self.feature_mode == "value_plus_time":
-            tfe = self._build_time_encodings(times)
+            tfe = _time_encodings_from_dt(times, self.time_components, prefix="")
             self.time_feature_cols_ = list(tfe.columns)
             blocks.append(tfe.to_numpy(dtype=np.float32))
 
@@ -102,6 +131,7 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
             blocks.append(extra.to_numpy(dtype=np.float32))
 
         feats = np.concatenate(blocks, axis=1) if len(blocks) > 1 else blocks[0]
+        # history feature names (sensor + time + custom). pred-time feature names are appended in make_arrays
         self.feature_cols_ = sensor_cols + self.time_feature_cols_ + self.custom_feature_cols_
         return feats, values, times.to_numpy(), sensor_cols
 
@@ -115,7 +145,7 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
           target_times: (N,), sensor_cols, meta
         """
         feats, values, times, sensor_cols = self._build_feature_matrix(df)
-        T, P = feats.shape
+        T, P_hist = feats.shape
         F = len(sensor_cols)
         L, H, S = self.seq_len, self.H, self.stride
         if T < L + H:
@@ -125,14 +155,27 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
         target_idx = endpoints + H                               # u = t+H
         N = len(endpoints)
 
-        X = np.empty((N, L, P), dtype=np.float32)
+        # Build prediction-time encodings at t+H
+        pred_times = pd.to_datetime(times[target_idx])
+        pred_tfe_df = _time_encodings_from_dt(pd.Series(pred_times), self.pred_time_components, prefix="pred_")
+        self.pred_time_feature_cols_ = list(pred_tfe_df.columns)
+        P_pred = pred_tfe_df.shape[1]
+        pred_tfe = pred_tfe_df.to_numpy(dtype=np.float32)  # (N, P_pred)
+
+        # Allocate
+        X = np.empty((N, L, P_hist + P_pred), dtype=np.float32)
         y = np.empty((N, F), dtype=np.float32)
         base_values = np.empty((N, F), dtype=np.float32)
 
+        # Fill
         for i, t in enumerate(endpoints):
-            X[i] = feats[t - L + 1 : t + 1]
-            cur  = values[t]
-            fut  = values[t + H]
+            hist = feats[t - L + 1 : t + 1]                 # (L, P_hist)
+            cur  = values[t]                                # (F,)
+            fut  = values[t + H]                            # (F,)
+            # broadcast pred-time features over L steps and concat as extra channels
+            pt   = np.tile(pred_tfe[i][None, :], (L, 1))    # (L, P_pred)
+            X[i] = np.concatenate([hist, pt], axis=1)       # (L, P_hist + P_pred)
+
             base_values[i] = cur
             y[i] = (fut - cur) if self.target_mode == "delta" else fut
 
@@ -143,14 +186,22 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
             mask = ~(
                 np.isnan(X).any(axis=(1, 2)) |
                 np.isnan(y).any(axis=1)   |
-                np.isnan(base_values).any(axis=1) 
+                np.isnan(base_values).any(axis=1)
             )
-            X, y, base_times, base_values, target_times, endpoints, target_idx = (
+            X, y, base_times, base_values, target_times, endpoints, target_idx, pred_tfe = (
                 X[mask], y[mask], base_times[mask], base_values[mask],
-                target_times[mask], endpoints[mask], target_idx[mask]
+                target_times[mask], endpoints[mask], target_idx[mask], pred_tfe[mask]
             )
 
-        meta = {"endpoints": endpoints, "target_idx": target_idx}
+        # Update final feature list to include pred-time encodings (they are in every row of the window)
+        self.feature_cols_ = (
+            self.sensor_cols_ + self.time_feature_cols_ + self.custom_feature_cols_ + self.pred_time_feature_cols_
+        )
+
+        meta = {
+            "endpoints": endpoints,
+            "target_idx": target_idx,
+        }
         return X, y, base_times, base_values, target_times, sensor_cols, meta
 
     def make_datasets(
@@ -183,19 +234,19 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
         ds_val   = _slice(_mk_mask(target_splits.get("val",   (-1, -1))))
         ds_test  = _slice(_mk_mask(target_splits.get("test",  (-1, -1))))
 
-        # meta for assemble_results_dataframe (single-horizon)
         meta_all = {
             "X": X,
-            "y": y,                                   # (N, F)  ← we'll slice per sensor
+            "y": y,                                   # (N, F)  ← slice per sensor when assembling
             "base_times": base_times,                 # (N,)
-            "base_values": base_values,               # (N, F)  ← slice per sensor
+            "base_values": base_values,               # (N, F)
             "pred_times": {h_label: target_times},    # dict[str] -> (N,)
             "feature_cols": self.feature_cols_,
             "custom_feature_cols": self.custom_feature_cols_,
+            "pred_time_feature_cols": self.pred_time_feature_cols_,
+            "time_feature_cols": self.time_feature_cols_,
             "h_labels": [h_label],
             "target_mode": self.target_mode,
             "sensor_cols": sensor_cols,
-            "time_feature_cols": self.time_feature_cols_,
             "seq_len": self.seq_len,
             "horizon_minutes": self.H,
             "endpoints": meta["endpoints"],
@@ -204,6 +255,7 @@ class TFMultiSeriesSeq2OneBuilder(LoggingMixin):
 
         self._log(
             f"[windowing] features/step: total={len(self.feature_cols_)} "
-            f"(sensors={len(sensor_cols)}, time={len(self.time_feature_cols_)}, custom={len(self.custom_feature_cols_)})"
+            f"(sensors={len(sensor_cols)}, time={len(self.time_feature_cols_)}, "
+            f"pred_time={len(self.pred_time_feature_cols_)}, custom={len(self.custom_feature_cols_)})"
         )
         return ds_train, ds_val, ds_test, meta_all
