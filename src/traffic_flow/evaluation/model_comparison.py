@@ -80,6 +80,20 @@ class ModelEvaluator:
         smape_vals = np.abs(y_pred - y_true) / np.where(denominator == 0, 1, denominator)
         return np.mean(smape_vals) * 100, np.std(smape_vals) * 100
 
+    def predict(self,model_path):
+        model = self.load_model_from_path(model_path) 
+        y_pred = model.predict(self.X_test)   
+        if model_path and 'neural' in model_path.lower():
+            _, X_test_normalized = normalize_data(X_test=self.X_test)
+            y_pred = model.predict(X_test_normalized).flatten()
+        else:
+            y_pred = model.predict(self.X_test)
+            self.y_pred_before_reconstruction = y_pred.copy()
+            y_pred = self.reconstruct_y(y_pred)
+            self.y_pred = y_pred
+        
+        return y_pred
+    
     def evaluate_model_from_path(self, model_path = None,saved_model = None, print_results=True):
         
         if model_path is not None and saved_model is not None:
