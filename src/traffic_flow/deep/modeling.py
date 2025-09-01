@@ -79,6 +79,7 @@ class LSTMBuilder:
         layer_norm_in_lstm: bool = False,
         attention_pooling: bool = False,
         residual_head: bool = False,
+        padding: Optional[str] = "causal",
     ) -> Tuple[Model, Dict[str, Any]]:
         # Infer shapes from a single batch (robust to any batch size)
         try:
@@ -114,6 +115,7 @@ class LSTMBuilder:
             layer_norm_in_lstm=layer_norm_in_lstm,
             attention_pooling=attention_pooling,
             residual_head=residual_head,
+            padding = padding
         )
 
         meta = dict(input_shape=input_shape, output_dim=out_dim, features=F, timesteps=T)
@@ -141,6 +143,7 @@ class LSTMBuilder:
         layer_norm_in_lstm: bool,
         attention_pooling: bool,
         residual_head: bool,
+        padding: Optional[str]
     ) -> Model:
 
         inputs = L.Input(shape=input_shape, name="inputs")
@@ -162,7 +165,7 @@ class LSTMBuilder:
             x = L.Conv1D(
                 filters=int(conv_filters),
                 kernel_size=int(conv_kernel),
-                padding="same",
+                padding=padding,
                 activation="relu",
                 name="conv1",
             )(x)

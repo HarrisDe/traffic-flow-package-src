@@ -16,7 +16,9 @@ from .label_scaling import LabelScaler
 from .modeling import LSTMBuilder
 from .training import TFTrainer
 from .evaluation import ModelEvaluator, assemble_results_dataframe
-from .custom_features import make_demand_context_feature_fn
+from .custom_features import make_demand_context_feature_fn, adapt_single_series_context_fn
+from .custom_features_extra import make_short_term_dynamics_fn, compose_feature_fns  # NEW
+
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,16 @@ class DataCfg:
     dc_add_ratio: bool = False
     dc_add_flags: bool = True
     holiday_dates: Optional[Iterable[str]] = None
+    
+    
+    # Short-term dynamics (unit-consistent)
+    add_short_term_dynamics: bool = False
+    std_base_unit: str = "kph"
+    std_short_windows: Tuple[int, ...] = (5, 15, 30)   # minutes
+    std_diff_windows:  Tuple[int, ...] = (1, 3, 5, 10) # minutes
+    std_ema_fast: int = 5
+    std_ema_slow: int = 15
+    std_z_threshold: float = 1.5
 
     # loader knobs
     smooth_series: bool = True
@@ -72,6 +84,7 @@ class ModelCfg:
     layer_norm_in_lstm: bool = True
     attention_pooling: bool = True
     residual_head: bool = True
+    conv_padding: str = "causal"
 
     # ---- training ----
     epochs: int = 50
@@ -80,16 +93,6 @@ class ModelCfg:
     loss: str = "huber"                   # "huber" | "mae" | "mse"
     optimizer: str = "adam"
 
-def adapt_single_series_context_fn(single_series_fn, *, datetime_col: str = "date", ref_col: str = "value_ref"):
-    def _wide_fn(df_wide: pd.DataFrame) -> pd.DataFrame:
-        sensors = [c for c in df_wide.columns if c not in (datetime_col, "test_set")]
-        tmp = pd.DataFrame({
-            datetime_col: pd.to_datetime(df_wide[datetime_col]),
-            ref_col: df_wide[sensors].mean(axis=1).astype(np.float32)
-        }, index=df_wide.index)
-        return single_series_fn(tmp)
-    _wide_fn.__name__ = f"wide_{getattr(single_series_fn, '__name__', 'custom')}"
-    return _wide_fn
 
 
 class TrafficDeepExperiment(LoggingMixin):
@@ -106,6 +109,61 @@ class TrafficDeepExperiment(LoggingMixin):
         self.artifacts_dir = artifacts_dir
         self.datetime_col = datetime_col
         os.makedirs(self.artifacts_dir, exist_ok=True)
+    
+    def _log_dataset_shapes(
+        self,
+        *,
+        ds_train,
+        ds_val,
+        ds_test,
+        meta: dict,
+        data_cfg: "DataCfg",
+    ) -> None:
+        """Pretty-print dataset/window shapes without changing behavior."""
+        def _card(ds):
+            if ds is None:
+                return 0
+            try:
+                return int(tf.data.experimental.cardinality(ds).numpy())
+            except Exception:
+                return None
+
+        def _peek_shapes(ds):
+            if ds is None:
+                return (None, None)
+            try:
+                for xb, yb in ds.take(1):
+                    def _shape(t):
+                        try:
+                            return tuple(t.shape.as_list())
+                        except Exception:
+                            return tuple(t.shape)
+                    return (_shape(xb), _shape(yb))
+            except Exception:
+                return (None, None)
+
+        features_per_step = len(meta.get("feature_cols", []))
+        n_sensors         = len(meta.get("sensor_cols", []))
+        h_label           = meta.get("h_labels", [f"{data_cfg.horizon_minutes}m"])[0]
+
+        train_n, val_n, test_n = _card(ds_train), _card(ds_val), _card(ds_test)
+        xb_shape, yb_shape     = _peek_shapes(ds_train)
+
+        lines = [
+            "[dataset] -------------------------------",
+            f" horizon: {h_label} | seq_len: {data_cfg.seq_len}",
+            f" features_per_step: {features_per_step} | n_sensors: {n_sensors}",
+            f" windows -> train: {train_n} | val: {val_n} | test: {test_n}",
+            f" batch shapes -> X: {xb_shape} | y: {yb_shape}",
+            "-----------------------------------------",
+        ]
+        msg = "\n".join(lines)
+
+        # Use LoggingMixin if available, else print
+        if hasattr(self, "log") and callable(getattr(self, "log")):
+            self.log(msg)  # type: ignore[attr-defined]
+        else:
+            print(msg, flush=True)
 
     def run(
         self,
@@ -115,6 +173,7 @@ class TrafficDeepExperiment(LoggingMixin):
         run_name: Optional[str] = None,
         results_csv: Optional[str] = None,
         save_predictions: bool = True,
+        log_dataset_shapes: bool = False, 
     ) -> Dict[str, object]:
 
         run_id = run_name or uuid.uuid4().hex[:8]
@@ -146,6 +205,7 @@ class TrafficDeepExperiment(LoggingMixin):
 
         # 3) Global demand-context → adapter over reference series
         custom_fn = None
+        parts = []
         if data_cfg.add_demand_context:
             dc_fn_single = make_demand_context_feature_fn(
                 datetime_col=self.datetime_col,
@@ -159,7 +219,24 @@ class TrafficDeepExperiment(LoggingMixin):
                 include_weekend_flag=bool(data_cfg.dc_add_flags),
                 holiday_dates=data_cfg.holiday_dates,
             )
-            custom_fn = adapt_single_series_context_fn(dc_fn_single, datetime_col=self.datetime_col, ref_col="value_ref")
+            global_ref_fn = adapt_single_series_context_fn(dc_fn_single, datetime_col=self.datetime_col, ref_col="value_ref")
+            parts.append(global_ref_fn)
+            
+            # 3b) Short-term per-sensor dynamics (m/s, m/s^2, m/s^3)
+        if data_cfg.add_short_term_dynamics:
+            dyn_fn = make_short_term_dynamics_fn(
+                datetime_col=self.datetime_col,
+                base_unit=data_cfg.std_base_unit,
+                short_windows=tuple(int(x) for x in data_cfg.std_short_windows),
+                diff_windows=tuple(int(x) for x in data_cfg.std_diff_windows),
+                ema_fast=int(data_cfg.std_ema_fast),
+                ema_slow=int(data_cfg.std_ema_slow),
+                z_k=float(data_cfg.std_z_threshold),
+            )
+            parts.append(dyn_fn)
+            
+        # 3c) Compose (or None if no extras selected)
+        custom_fn = compose_feature_fns(*parts) if parts else None
 
         # 4) Windowing
         win = TFMultiSeriesSeq2OneBuilder(
@@ -175,6 +252,17 @@ class TrafficDeepExperiment(LoggingMixin):
             disable_logs=self.disable_logs,
         )
         ds_train, ds_val, ds_test, meta_all = win.make_datasets(df_wide, splits)
+        
+        if log_dataset_shapes:
+            self._log_dataset_shapes(
+                ds_train=ds_train,
+                ds_val=ds_val,
+                ds_test=ds_test,
+                meta=meta_all,
+                data_cfg=data_cfg,
+            )
+        
+        
 
         # Also keep dense arrays (needed for joined export)
         X_all, y_all, base_times, base_vals, target_times, sensor_cols, raw_meta = win.make_arrays(df_wide)
@@ -208,6 +296,7 @@ class TrafficDeepExperiment(LoggingMixin):
             layer_norm_in_lstm=model_cfg.layer_norm_in_lstm,
             attention_pooling=model_cfg.attention_pooling,
             residual_head=model_cfg.residual_head,
+            padding = model_cfg.conv_padding
         )
 
         trainer = TFTrainer(model)
