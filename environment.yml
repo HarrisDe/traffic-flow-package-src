@@ -1,4 +1,4 @@
-name: tf-clean
+name: traffic-flow-environment
 channels: [conda-forge]
 dependencies:
   - python=3.10
@@ -19,10 +19,21 @@ dependencies:
   - requests>=2.31,<3 
   - seaborn>=0.13,<0.14
   - filelock 
+  - tqdm>=4.66,<5
+  - pykalman
   - pip:
-      # Linux (NVIDIA): TF with bundled CUDA/cuDNN
-      - 'tensorflow[and-cuda]>=2.16,<2.19; platform_system == "Linux"'
-      # macOS (both Apple silicon & Intel): base TF
-      - 'tensorflow>=2.16,<2.19; platform_system == "Darwin"'
-      # macOS GPU via Metal plugin
-      - 'tensorflow-metal>=1.1; platform_system == "Darwin"'
+        # Install YOUR package (editable local dev)
+        - -e .
+
+        # TensorFlow per platform (pip evaluates these markers):
+        # Apple Silicon (M1/M2/M3)
+        - "tensorflow-macos==2.15.*; platform_system == 'Darwin' and platform_machine == 'arm64'"
+
+        # macOS Intel (TF >2.10 is not supported; pin to 2.10.x CPU)
+        - "tensorflow==2.10.*; platform_system == 'Darwin' and platform_machine == 'x86_64'"
+
+        # Linux (CPU default). If you need GPU, see note below.
+        - "tensorflow==2.15.*; platform_system == 'Linux'"
+
+        # Windows (CPU default)
+        - "tensorflow==2.15.*; platform_system == 'Windows' and platform_machine == 'AMD64'"

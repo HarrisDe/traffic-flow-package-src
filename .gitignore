@@ -63,6 +63,8 @@ scripts/*
 !scripts/train_xgb.py
 !scripts/compare_api_vs_local.py
 !scripts/gen_constraints.py
+!scripts/compare_api_vs_local.py
+!scripts/compare_xgb_vs_lstm.ipynb
 # -------------------------------
 # Other
 # -------------------------------

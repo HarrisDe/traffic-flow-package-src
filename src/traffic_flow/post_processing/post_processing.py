@@ -22,7 +22,71 @@ logging.basicConfig(
 )
 
 
+def xgb_to_lstm_like_df(
+    df: pd.DataFrame,
+    *,
+    sensor_col: str = "sensor_id",
+    issue_time_col: str = "date",
+    target_time_col: str = "prediction_time",
+    actual_col: str = "target_total_speed",   # y_true at t+H
+    pred_col: str = "y_pred",                  # model forecast for t+H issued at t
+    issued_val_col: str = "value",             # actual at issue time t (persistence baseline)
+    dtype: str = "float32",
+    dedup_agg: str = "last",                   # or "mean"
+) -> pd.DataFrame:
+    """
+    Convert long df_pred_xgb into wide df_pred layout:
+      columns: date, prediction_time, <sensor>, <sensor>_pred, <sensor>_at_issued_time
 
+    Mapping:
+      - <sensor>                   <- target_total_speed   (actual at prediction_time = t+H)
+      - <sensor>_pred              <- y_pred               (forecast for t+H, issued at date = t)
+      - <sensor>_at_issued_time    <- value                (actual at issue time t)
+    """
+    # Keep only needed columns and ensure datetimes
+    cols = [sensor_col, issue_time_col, target_time_col, actual_col, pred_col, issued_val_col]
+    df = df[cols].copy()
+    df[issue_time_col]  = pd.to_datetime(df[issue_time_col])
+    df[target_time_col] = pd.to_datetime(df[target_time_col])
+
+    # Deduplicate per (t, t+H, sensor) if any; choose how to aggregate
+    gb = (df.sort_values([issue_time_col, target_time_col])
+            .groupby([issue_time_col, target_time_col, sensor_col], as_index=False))
+    if dedup_agg == "mean":
+        dfu = gb.agg({actual_col: "mean", pred_col: "mean", issued_val_col: "mean"})
+    else:
+        dfu = gb.agg({actual_col: "last", pred_col: "last", issued_val_col: "last"})
+
+    # Pivot each measure to wide
+    wide_act  = dfu.pivot(index=[issue_time_col, target_time_col], columns=sensor_col, values=actual_col)
+    wide_pred = dfu.pivot(index=[issue_time_col, target_time_col], columns=sensor_col, values=pred_col)
+    wide_iss  = dfu.pivot(index=[issue_time_col, target_time_col], columns=sensor_col, values=issued_val_col)
+
+    # Rename prediction & issued-time columns
+    wide_pred.columns = [f"{c}_pred" for c in wide_pred.columns]
+    wide_iss.columns  = [f"{c}_at_issued_time" for c in wide_iss.columns]
+
+    # Join and tidy
+    wide = pd.concat([wide_act, wide_pred, wide_iss], axis=1)
+
+    # Order columns: date, prediction_time, then for each sensor: <s>, <s>_pred, <s>_at_issued_time
+    sensors = list(wide_act.columns)  # preserves pivot order
+    ordered = []
+    for s in sensors:
+        for c in (s, f"{s}_pred", f"{s}_at_issued_time"):
+            if c in wide.columns:
+                ordered.append(c)
+
+    wide = wide[ordered].reset_index().sort_values([issue_time_col, target_time_col])
+
+    # Optional downcast to save memory
+    if dtype:
+        num_cols = [c for c in wide.columns if c not in (issue_time_col, target_time_col)]
+        wide[num_cols] = wide[num_cols].astype(dtype)
+
+    # Standardize column names to match df_pred
+    wide = wide.rename(columns={issue_time_col: "date", target_time_col: "prediction_time"})
+    return wide
 
 
 class PredictionCorrectionPerSensor:

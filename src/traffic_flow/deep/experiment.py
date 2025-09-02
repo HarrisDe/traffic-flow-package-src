@@ -95,12 +95,25 @@ class ModelCfg:
 
 
 
+from dataclasses import asdict
+from typing import Optional, Dict, List
+import os, json, uuid
+import numpy as np
+import pandas as pd
+
 class TrafficDeepExperiment(LoggingMixin):
+    """
+    Run a deep-learning experiment end-to-end.
+
+    - If artifacts_dir is None OR save_artifacts=False, nothing is written to disk.
+    - Model weights are not saved here (no model.save).
+    """
+
     def __init__(
         self,
         *,
         data_path: str,                         # parquet for InitialTrafficDataLoader
-        artifacts_dir: str = "./results",
+        artifacts_dir: Optional[str] = "./results",
         datetime_col: str = "date",
         disable_logs: bool = False,
     ) -> None:
@@ -108,8 +121,23 @@ class TrafficDeepExperiment(LoggingMixin):
         self.data_path = data_path
         self.artifacts_dir = artifacts_dir
         self.datetime_col = datetime_col
-        os.makedirs(self.artifacts_dir, exist_ok=True)
-    
+        if self.artifacts_dir:  # only create if provided
+            os.makedirs(self.artifacts_dir, exist_ok=True)
+
+    def _paths(self, run_id: str) -> Dict[str, Optional[str]]:
+        """Return file paths for this run, or all-None if no artifacts dir."""
+        if not self.artifacts_dir:
+            return {"root": None, "history": None, "preds": None, "metrics": None, "cfg": None}
+        base = os.path.join(self.artifacts_dir, run_id)
+        os.makedirs(base, exist_ok=True)
+        return {
+            "root": base,
+            "history": os.path.join(base, "history.json"),
+            "preds": os.path.join(base, "predictions.parquet"),
+            "metrics": os.path.join(base, "metrics.json"),
+            "cfg": os.path.join(base, "config.json"),
+        }
+
     def _log_dataset_shapes(
         self,
         *,
@@ -159,7 +187,6 @@ class TrafficDeepExperiment(LoggingMixin):
         ]
         msg = "\n".join(lines)
 
-        # Use LoggingMixin if available, else print
         if hasattr(self, "log") and callable(getattr(self, "log")):
             self.log(msg)  # type: ignore[attr-defined]
         else:
@@ -168,16 +195,19 @@ class TrafficDeepExperiment(LoggingMixin):
     def run(
         self,
         *,
-        data_cfg: DataCfg,
-        model_cfg: ModelCfg,
+        data_cfg: "DataCfg",
+        model_cfg: "ModelCfg",
         run_name: Optional[str] = None,
         results_csv: Optional[str] = None,
         save_predictions: bool = True,
-        log_dataset_shapes: bool = False, 
+        save_artifacts: bool = True,          # <-- NEW
+        log_dataset_shapes: bool = False,
     ) -> Dict[str, object]:
 
         run_id = run_name or uuid.uuid4().hex[:8]
-        paths = self._paths(run_id)
+        paths = self._paths(run_id) if save_artifacts else {"root": None, "history": None, "preds": None, "metrics": None, "cfg": None}
+
+        # Config snapshot
         self._dump_json(paths["cfg"], {
             "data_cfg": asdict(data_cfg),
             "model_cfg": asdict(model_cfg),
@@ -203,9 +233,9 @@ class TrafficDeepExperiment(LoggingMixin):
         splitter.attach_frame(df_wide)
         splits = splitter.build_target_splits(val_fraction_of_train=data_cfg.val_fraction_of_train)
 
-        # 3) Global demand-context → adapter over reference series
+        # 3) Optional extra features (global context + short-term dynamics)
         custom_fn = None
-        parts = []
+        parts: List = []
         if data_cfg.add_demand_context:
             dc_fn_single = make_demand_context_feature_fn(
                 datetime_col=self.datetime_col,
@@ -221,8 +251,7 @@ class TrafficDeepExperiment(LoggingMixin):
             )
             global_ref_fn = adapt_single_series_context_fn(dc_fn_single, datetime_col=self.datetime_col, ref_col="value_ref")
             parts.append(global_ref_fn)
-            
-            # 3b) Short-term per-sensor dynamics (m/s, m/s^2, m/s^3)
+
         if data_cfg.add_short_term_dynamics:
             dyn_fn = make_short_term_dynamics_fn(
                 datetime_col=self.datetime_col,
@@ -234,8 +263,7 @@ class TrafficDeepExperiment(LoggingMixin):
                 z_k=float(data_cfg.std_z_threshold),
             )
             parts.append(dyn_fn)
-            
-        # 3c) Compose (or None if no extras selected)
+
         custom_fn = compose_feature_fns(*parts) if parts else None
 
         # 4) Windowing
@@ -252,7 +280,7 @@ class TrafficDeepExperiment(LoggingMixin):
             disable_logs=self.disable_logs,
         )
         ds_train, ds_val, ds_test, meta_all = win.make_datasets(df_wide, splits)
-        
+
         if log_dataset_shapes:
             self._log_dataset_shapes(
                 ds_train=ds_train,
@@ -261,10 +289,8 @@ class TrafficDeepExperiment(LoggingMixin):
                 meta=meta_all,
                 data_cfg=data_cfg,
             )
-        
-        
 
-        # Also keep dense arrays (needed for joined export)
+        # Dense arrays for export/eval assembly
         X_all, y_all, base_times, base_vals, target_times, sensor_cols, raw_meta = win.make_arrays(df_wide)
         u = raw_meta["target_idx"]
         h_label: str = meta_all["h_labels"][0]
@@ -286,7 +312,7 @@ class TrafficDeepExperiment(LoggingMixin):
             add_dense=model_cfg.add_dense,
             dense_units=model_cfg.dense_units,
             dense_activation=model_cfg.dense_activation,
-            adapt_batches=model_cfg.adapt_batches,   # <— was None; now uses cfg
+            adapt_batches=model_cfg.adapt_batches,
             # --- extras ---
             bidirectional=model_cfg.bidirectional,
             recurrent_dropout=model_cfg.recurrent_dropout,
@@ -296,7 +322,7 @@ class TrafficDeepExperiment(LoggingMixin):
             layer_norm_in_lstm=model_cfg.layer_norm_in_lstm,
             attention_pooling=model_cfg.attention_pooling,
             residual_head=model_cfg.residual_head,
-            padding = model_cfg.conv_padding
+            padding=model_cfg.conv_padding,
         )
 
         trainer = TFTrainer(model)
@@ -317,8 +343,7 @@ class TrafficDeepExperiment(LoggingMixin):
         )
         self._dump_json(paths["history"], history.history)
 
-        # 7) Predict on TEST, make per-sensor results with assemble_results_dataframe
-        #    and evaluate with ModelEvaluator (drop MASE keys).
+        # 7) Predict on TEST and evaluate
         def _mask(r):
             i0, i1 = r
             if i0 < 0 or i1 < 0 or i1 < i0:
@@ -327,18 +352,19 @@ class TrafficDeepExperiment(LoggingMixin):
 
         m_te = _mask(splits["test"])
         if not m_te.any():
-            self._dump_json(paths["metrics"], {"note": "no test windows"})
+            self._dump_json(paths["metrics"], {"note": "no test windows", "run_id": run_id})
             return {"preds_df": None, "summary": {"run_id": run_id}, "run_id": run_id, "paths": paths}
 
         X_te = X_all[m_te]
-        y_te = y_all[m_te]             # (N_te, F)  in model target space
-        b_te = base_vals[m_te]         # (N_te, F)
+        y_te = y_all[m_te]
+        b_te = base_vals[m_te]
         t_te = pd.to_datetime(target_times[m_te])
+        issued_times = pd.to_datetime(base_times[m_te])
 
-        y_pred_s = model.predict(X_te, verbose=0)       # scaled space
-        y_pred   = scaler.unscale(y_pred_s)             # back to model target space
+        y_pred_s = model.predict(X_te, verbose=0)
+        y_pred   = scaler.unscale(y_pred_s)
 
-        # If model target is delta ⇒ reconstruct absolute; otherwise use abs directly
+        # Absolute space (if delta, reconstruct)
         if data_cfg.target_mode == "delta":
             y_true_abs = b_te + y_te
             y_pred_abs = b_te + y_pred
@@ -346,67 +372,53 @@ class TrafficDeepExperiment(LoggingMixin):
             y_true_abs = y_te
             y_pred_abs = y_pred
 
-        # Build one wide predictions frame by merging per-sensor assembled frames
         wide_parts: List[pd.DataFrame] = []
         metrics_list: List[Dict[str, float]] = []
 
         for k, sensor in enumerate(sensor_cols):
-            # Per-sensor meta in the shape expected by assemble_results_dataframe
             meta_sensor = {
-                "y": y_te[:, [k]],                        # (N_te, 1)
-                "base_times": base_times[m_te],           # (N_te,)
-                "base_values": b_te[:, k],                # (N_te,)
-                "pred_times": {h_label: t_te},            # dict[label] -> (N_te,)
+                "y": y_te[:, [k]],
+                "base_times": base_times[m_te],
+                "base_values": b_te[:, k],
+                "pred_times": {h_label: t_te},
                 "h_labels": [h_label],
                 "target_mode": data_cfg.target_mode,
             }
-            # Per-sensor predictions in model target space
-            y_pred_sensor = y_pred[:, [k]]               # (N_te, 1)
+            y_pred_sensor = y_pred[:, [k]]
 
             df_res = assemble_results_dataframe(
                 meta=meta_sensor,
-                y_pred=y_pred_sensor,
-                datetime_col=self.datetime_col,
-                target_mode=data_cfg.target_mode,
-                value_col=sensor,                         # base/current value col name
-            )
+                y_pred=y_pred_sensor,                  # (N_te, 1) or (N_te,) is fine
+                value_col=sensor)
 
-            # Keep absolute columns for this horizon and rename to <sensor> / <sensor>_pred
-            pt_col = f"prediction_time_{h_label}"
-            if pt_col not in df_res.columns:              # fallback name from your helper
-                pt_col = "prediction_time"
-            out_k = pd.DataFrame({
-                "prediction_time": pd.to_datetime(df_res[pt_col]),
-                sensor:           df_res.get(f"y_true_abs_{h_label}", df_res[f"y_true_delta_{h_label}"] + df_res[sensor]),
-                f"{sensor}_pred": df_res.get(f"y_pred_abs_{h_label}", df_res[f"y_pred_delta_{h_label}"] + df_res[sensor]),
-            })
 
+            out_k = df_res[["date", "prediction_time", sensor, f"{sensor}_pred", f"{sensor}_at_issued_time"]]
             wide_parts.append(out_k)
 
-            # Evaluate (absolute space); drop MASE keys afterwards
             ev = ModelEvaluator(
-                df_res=df_res.assign(test_set=True),    # mark rows as test
+                df_res=df_res.assign(test_set=True),
                 horizon=h_label,
-                datetime_col=self.datetime_col,
+                datetime_col="prediction_time",
                 value_col=sensor,
                 disable_logs=True,
             )
             m_mod, m_nv = ev.evaluate(rounding=3)
-            # attach sensor id for aggregation
-            naive_row = {f"naive_{k[:-6]}": v for k, v in m_nv.items() if k.endswith("_naive")}
+            naive_row = {f"naive_{kk[:-6]}": v for kk, v in m_nv.items() if kk.endswith("_naive")}
             mrow = {**m_mod, **naive_row, "sensor": sensor}
-            mrow["sensor"] = sensor
             metrics_list.append(mrow)
 
-        # Merge per-sensor frames on prediction_time
         preds_wide = wide_parts[0]
         for part in wide_parts[1:]:
-            preds_wide = preds_wide.merge(part, on="prediction_time", how="outer")
+            preds_wide = preds_wide.merge(part, on=["date","prediction_time"], how="outer")
+        
+        lead = ["date", "prediction_time"]
+        sensors = [c for c in preds_wide.columns if c not in set(lead) and not c.endswith("_pred") and not c.endswith("_at_issued_time")]
+        ordered = lead + [x for s in sensors for x in (s, f"{s}_pred", f"{s}_at_issued_time") if x in preds_wide.columns]
+        preds_wide = preds_wide[ordered]
 
-        if save_predictions:
+        if save_predictions and save_artifacts and paths["preds"]:
             preds_wide.to_parquet(paths["preds"], index=False)
 
-        # Aggregate metrics across sensors (mean)
         met_df = pd.DataFrame(metrics_list).set_index("sensor")
         agg = met_df.mean(numeric_only=True).to_dict()
 
@@ -420,13 +432,11 @@ class TrafficDeepExperiment(LoggingMixin):
             "n_train_windows": int(((u >= splits["train"][0]) & (u <= splits["train"][1])).sum()) if splits["train"][0] >= 0 else 0,
             "n_val_windows":   int(((u >= splits["val"][0])   & (u <= splits["val"][1])).sum())   if splits["val"][0]   >= 0 else 0,
             "n_test_windows":  int(m_te.sum()),
-            # model metrics (averaged over sensors)
             "MAE":   float(agg.get("MAE", np.nan)),
             "MedianAE": float(agg.get("MedianAE", np.nan)),
             "RMSE":  float(agg.get("RMSE", np.nan)),
             "MAPE":  float(agg.get("MAPE", np.nan)),
             "SMAPE": float(agg.get("SMAPE", np.nan)),
-            # naive (averaged)
             "naive_MAE":   float(agg.get("naive_MAE", np.nan)),
             "naive_MedianAE": float(agg.get("naive_MedianAE", np.nan)),
             "naive_RMSE":  float(agg.get("naive_RMSE", np.nan)),
@@ -435,8 +445,7 @@ class TrafficDeepExperiment(LoggingMixin):
         }
         self._dump_json(paths["metrics"], summary)
 
-        # Optional: append to CSV
-        if results_csv:
+        if results_csv and save_artifacts:
             row = {
                 "run_id": run_id,
                 **{f"data.{k}": v for k, v in asdict(data_cfg).items()},
@@ -448,24 +457,20 @@ class TrafficDeepExperiment(LoggingMixin):
         return {"preds_df": preds_wide, "summary": summary, "run_id": run_id, "paths": paths}
 
     # --------------- helpers ---------------
-    def _paths(self, run_id: str) -> Dict[str, str]:
-        base = os.path.join(self.artifacts_dir, run_id)
-        os.makedirs(base, exist_ok=True)
-        return {
-            "root": base,
-            "history": os.path.join(base, "history.json"),
-            "preds": os.path.join(base, "predictions.parquet"),
-            "metrics": os.path.join(base, "metrics.json"),
-            "cfg": os.path.join(base, "config.json"),
-        }
 
     @staticmethod
-    def _dump_json(path: str, obj: Dict) -> None:
+    def _dump_json(path: Optional[str], obj: Dict) -> None:
+        """Write JSON if a path is provided; otherwise no-op."""
+        if not path:
+            return
         with open(path, "w") as f:
             json.dump(obj, f, indent=2)
 
     @staticmethod
-    def _append_row(csv_path: str, row: Dict[str, object]) -> None:
+    def _append_row(csv_path: Optional[str], row: Dict[str, object]) -> None:
+        """Append a row to CSV if a path is provided; otherwise no-op."""
+        if not csv_path:
+            return
         df_row = pd.DataFrame([row])
         if not os.path.exists(csv_path):
             df_row.to_csv(csv_path, index=False); return
