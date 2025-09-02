@@ -20,10 +20,10 @@ from ..features.adjacent_features import AdjacentSensorFeatureAdder
 from ..features.target_variable_feature import TargetVariableCreator
 from ..features.misc_features import WeatherFeatureDropper
 from ..features.gman_features import GMANPredictionAdder
-from ..data_loading.data_loader_orchestrator import InitialTrafficDataLoader
+from ...data_loading.data_loader_orchestrator import InitialTrafficDataLoader
 from ..constants.constants import WEATHER_COLUMNS
-from ..utils.helper_utils import LoggingMixin
-from ..preprocessing.dtypes import build_dtype_schema, enforce_dtypes
+from ...utils.helper_utils import LoggingMixin
+from ...preprocessing.dtypes import build_dtype_schema, enforce_dtypes
 
 
 class TrafficDataPipelineOrchestrator(LoggingMixin):
@@ -45,7 +45,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         weather_cols: Optional[List[str]] = WEATHER_COLUMNS,
         disable_logs: bool = False,
         df_gman: Optional[pd.DataFrame] = None,       # kept for legacy run_pipeline
-        sensor_encoding_type: str = "ordinal",
+        sensor_encoding_type: str = "mean",
     ) -> None:
         super().__init__(disable_logs=disable_logs)
 

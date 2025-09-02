@@ -2,22 +2,22 @@
 from __future__ import annotations
 
 # Always-light runtime exports
-from .service.runtime import InferenceRuntime
-from .inference.inference_pipeline import TrafficInferencePipeline
+from .tabular.service.runtime import InferenceRuntime
+from .tabular.inference.inference_pipeline import TrafficInferencePipeline
 
 # Optional/heavier training APIs (don’t break import if absent)
 try:
-    from .pipeline.data_pipeline_orchestrator import TrafficDataPipelineOrchestrator
+    from .tabular.pipeline.data_pipeline_orchestrator import TrafficDataPipelineOrchestrator
 except ImportError:
     TrafficDataPipelineOrchestrator = None  
 
 try:
-    from .modeling.model_tuning import ModelTunerXGB
+    from .tabular.modeling.model_tuning import ModelTunerXGB
 except ImportError:
     ModelTunerXGB = None  
 
 try:
-    from .evaluation.model_comparison import ModelEvaluator
+    from tabular.evaluation.model_comparison import ModelEvaluator
 except ImportError:
     ModelEvaluator = None  
 

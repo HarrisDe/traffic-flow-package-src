@@ -12,7 +12,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-from ..features.gman_features import GMANPredictionAdder
+from ..tabular.features.gman_features import GMANPredictionAdder
 from ..utils.helper_utils import LoggingMixin
 from ..preprocessing.cleaning import (
     clean_and_cast,

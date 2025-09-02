@@ -7,7 +7,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolu
 import numpy as np
 import matplotlib.patheffects as PathEffects
 #from .data_processing import TrafficFlowDataProcessing
-from ..utils.helper_utils import normalize_data
+from ...utils.helper_utils import normalize_data
 import seaborn as sns
 sns.set_style('darkgrid')
 import warnings
@@ -16,7 +16,7 @@ from time import time
 import pandas as pd
 from typing import Optional, Dict, Union
 from ..inference.prediction_protocol import make_prediction_frame
-from ..preprocessing.cleaning import clean_and_cast
+from ...preprocessing.cleaning import clean_and_cast
 
 
 
@@ -122,7 +122,7 @@ class ModelEvaluator:
         self.y_pred_before_reconstruction = y_pred.copy()
         y_pred = self.reconstruct_y(y_pred)
         time_end = time()
-        self.df_predictions = self.df_for_ML[[self.date_col,self.sensor_col,'date_of_prediction',self.value_col,
+        self.df_predictions = self.df_for_ML[[self.date_col,self.sensor_col,'prediction_time',self.value_col,
                                               'target_total_speed']]
         self.df_predictions['y_pred'] = y_pred
         self.y_pred = y_pred
@@ -293,8 +293,8 @@ class ModelEvaluator:
 
         # 4) Infer horizon if not provided
         if horizon_min is None:
-            if "date_of_prediction" in df_test.columns and self.date_col in df_test.columns:
-                delta = pd.to_datetime(df_test["date_of_prediction"]) - pd.to_datetime(df_test[self.date_col])
+            if "prediction_time" in df_test.columns and self.date_col in df_test.columns:
+                delta = pd.to_datetime(df_test["prediction_time"]) - pd.to_datetime(df_test[self.date_col])
                 horizon_min = int(round(delta.dt.total_seconds().median() / 60.0))
             else:
                 # reasonable fallback

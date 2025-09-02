@@ -3,7 +3,7 @@ from gc import disable
 import pandas as pd
 from     typing import Iterable, Optional, Dict, Any
 from sklearn.base import BaseEstimator, TransformerMixin
-from ..utils.helper_utils import LoggingMixin 
+from ...utils.helper_utils import LoggingMixin 
 
 
     

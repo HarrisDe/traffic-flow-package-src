@@ -101,8 +101,8 @@ import pandas as pd
 
 
 from ..utils.helper_utils import LoggingMixin
-from ..plotting import ScatterPlotterSeaborn
-from ..plotting import TimeSeriesPlotter
+from .plotting import ScatterPlotterSeaborn
+from .plotting import TimeSeriesPlotter
 
 
 def _valid_pairs(a, b):

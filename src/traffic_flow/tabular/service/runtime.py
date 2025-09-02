@@ -3,13 +3,13 @@ import joblib
 from typing import Dict, Any, Tuple, Optional
 from ..inference.inference_pipeline import TrafficInferencePipeline
 from ..inference.prediction_protocol import make_prediction_frame
-from ..utils.helper_utils import LoggingMixin
+from ...utils.helper_utils import LoggingMixin
 import numpy as np
 import pandas as pd
 
 from ..inference.inference_pipeline import TrafficInferencePipeline
 from ..inference.prediction_protocol import make_prediction_frame
-from ..utils.helper_utils import LoggingMixin  # adjust import to your project
+from ...utils.helper_utils import LoggingMixin  # adjust import to your project
 
 
 class InferenceRuntime(LoggingMixin):
