@@ -12,6 +12,7 @@ from ..features.temporal_features import TemporalLagFeatureAdder
 from ..features.congestion_features import CongestionFeatureEngineer
 from ..features.congestion_threshold import PerSensorCongestionFlagger
 from ..features.congestion_outlier_features    import GlobalOutlierFlagger
+from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureEngineer
 from ..features.historical_reference_features import (
     PreviousWeekdayWindowFeatureEngineer,
 )
@@ -297,7 +298,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         use_gman_target: bool = False,
         drop_missing_gman_rows: bool = False,
         drop_datetime: bool = True,
-        drop_sensor_id: bool = True
+        drop_sensor_id: bool = True,
+        add_prediction_time_cyclical_features: bool = True,
+        include_current_time_cyclical: bool = True,
     ):  
         self.row_order = [self.datetime_col,self.sensor_col]
         
@@ -354,6 +357,24 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             df = prev.transform(df)
             self.previous_day_fe = prev
             self.feature_log["previous_day_features"] = prev.feature_names_out_
+        
+        # --- prediction-time cyclical encodings (curr + tgt) ---------------
+        if add_prediction_time_cyclical_features:
+            ptfe = PredictionTimeCyclicalFeatureEngineer(
+                datetime_col=self.datetime_col,
+                horizon_min=horizon,
+                add_day=True,
+                add_hour=True,
+                add_minute=True,
+                include_current_time=include_current_time_cyclical,
+                include_forecast_time=True,            # always include target time encodings
+                disable_logs=self.disable_logs,
+            )
+            # Stateless; fit is a no-op but keeps parity with others
+            ptfe.fit(df)
+            df = ptfe.transform(df)
+            self.pred_time_cyc_fe = ptfe
+            self.feature_log["prediction_time_cyclical"] = list(ptfe.feature_names_out_)
 
         # --- drop weather ---------------------------------------------
         if drop_weather:
@@ -463,7 +484,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         use_gman_target: bool = False,
         drop_missing_gman_rows = False,
         drop_datetime = True,
-        drop_sensor_id = True
+        drop_sensor_id = True,
+        add_prediction_time_cyclical_features: bool = True,
+        include_current_time_cyclical: bool = True,
     ):
 
         # 1) core part
@@ -501,7 +524,9 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             use_gman_target=use_gman_target,
             drop_missing_gman_rows=drop_missing_gman_rows,
             drop_datetime=drop_datetime,
-            drop_sensor_id= drop_sensor_id
+            drop_sensor_id= drop_sensor_id,
+            add_prediction_time_cyclical_features=add_prediction_time_cyclical_features,
+            include_current_time_cyclical=include_current_time_cyclical
         )
     
     def export_states(self, strict: bool = False) -> dict:
@@ -538,6 +563,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 "lag_state":             safe_export(self.lag_fe),
                 "congestion_state":      safe_export(self.congestion_flagger),
                 "outlier_state":         safe_export(self.outlier_flagger),
+                "prediction_time_cyc_state": safe_export(self.pred_time_cyc_fe),
 
                 # Targets
                 "target_state":          safe_export(self.target_creator),

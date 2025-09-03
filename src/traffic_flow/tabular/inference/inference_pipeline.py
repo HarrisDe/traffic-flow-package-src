@@ -19,6 +19,7 @@ from ..features.congestion_threshold  import PerSensorCongestionFlagger
 from ..features.congestion_outlier_features  import GlobalOutlierFlagger
 from ..features.historical_reference_features import PreviousWeekdayWindowFeatureEngineer
 from ..features.misc_features      import WeatherFeatureDropper
+from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureEngineer
 from ...preprocessing.dtypes import enforce_dtypes
 from .prediction_protocol import make_prediction_frame
 from ...utils.helper_utils import LoggingMixin
@@ -68,6 +69,10 @@ class TrafficInferencePipeline(LoggingMixin):
             self.prev_day_fe = PreviousWeekdayWindowFeatureEngineer.from_state(
                 states["previous_day_state"]
             )
+        self.pred_time_cyc_fe = None
+        pt_state = states.get("prediction_time_cyc_state", None)
+        if pt_state is not None:
+            self.pred_time_cyc_fe = PredictionTimeCyclicalFeatureEngineer.from_state(pt_state)
 
         # --- meta --------------------------------------------------
         self.clean_cfg: Dict[str, Any] = states["clean_state"]
@@ -125,6 +130,8 @@ class TrafficInferencePipeline(LoggingMixin):
         df = self.weather_drop.transform(df)
         if self.prev_day_fe is not None:
             df = self.prev_day_fe.transform(df)
+        if self.pred_time_cyc_fe is not None:
+            df = self.pred_time_cyc_fe.transform(df)
 
  
 
