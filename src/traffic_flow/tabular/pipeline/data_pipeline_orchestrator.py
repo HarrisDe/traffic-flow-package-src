@@ -16,6 +16,7 @@ from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureE
 from ..features.historical_reference_features import (
     PreviousWeekdayWindowFeatureEngineer,
 )
+from ..features.momentum_features import MomentumFeatureEngineer
 from ..features.base import SensorEncodingStrategy
 from ..features.adjacent_features import AdjacentSensorFeatureAdder
 from ..features.target_variable_feature import TargetVariableCreator
@@ -25,6 +26,9 @@ from ...data_loading.data_loader_orchestrator import InitialTrafficDataLoader
 from ..constants.constants import WEATHER_COLUMNS
 from ...utils.helper_utils import LoggingMixin
 from ...preprocessing.dtypes import build_dtype_schema, enforce_dtypes
+
+
+# ---- Momentum defaults (computed at call-time to pick up current attrs) ----
 
 
 class TrafficDataPipelineOrchestrator(LoggingMixin):
@@ -82,6 +86,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.lag_fe: Optional[TemporalLagFeatureAdder] = None
         self.congestion_flagger:   PerSensorCongestionFlagger | None = None
         self.outlier_flagger:      GlobalOutlierFlagger | None = None
+        self.momentum_fe: MomentumFeatureEngineer | None = None
+        self.pred_time_cyc_fe: PredictionTimeCyclicalFeatureEngineer | None = None
         
         
         # optional / horizon-specific components that might not be created
@@ -115,6 +121,26 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         raise ValueError(
             f"Unsupported sensor_encoding_type {self.sensor_encoding_type}"
         )
+        
+    # ---- Momentum defaults (computed at call-time to pick up current attrs) ----
+    def _default_momentum_params(self) -> Dict[str, Any]:
+        return {
+            "sensor_col": getattr(self, "sensor_col", "sensor_id"),
+            "value_col": getattr(self, "value_col", "value"),
+            "datetime_col": getattr(self, "datetime_col", "date"),
+            "slope_windows": (5, 10, 15, 30),
+            "ewm_halflives": (5.0, 10.0),
+            "vol_windows": (10, 30),
+            "minmax_windows": (15, 30),
+            "thresholds_kph": (70.0, 80.0, 90.0),
+            "minutes_per_row": float(getattr(self, "minutes_per_row", 1.0)),
+            "drop_fast_flag": True,
+            "fast_flag_window": 5,
+            "fast_flag_thresh": -1.0,
+            "fill_nans_value": -1.0,
+            "epsilon": 1e-6,
+            "disable_logs": getattr(self, "disable_logs", False),
+        }
 
     # ================================================================== #
     # 0-6  Horizon-independent part
@@ -142,6 +168,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         lower_bound: float = 0.01,
         upper_bound: float = 0.99,
         use_median_instead_of_mean_smoothing: bool = False,
+        add_momentum_features: bool = True,
+        momentum_params: dict | None = None,
     ) -> pd.DataFrame:
         
         
@@ -281,7 +309,24 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.base_df = df
         self.smoothing_id_prev = self.smoothing_id
         self.base_features_prepared = True
+        
+                # --- Momentum features (HORIZON-INDEPENDENT) ---
+        if add_momentum_features:
+            df = df.sort_values([self.sensor_col, self.datetime_col])
+            mm_kwargs = self._default_momentum_params()
+            if momentum_params:                # <-- if dict is provided, override defaults
+                mm_kwargs = momentum_params
+
+            mom_fe = MomentumFeatureEngineer(**mm_kwargs)
+            mom_fe.fit(df)
+            df = mom_fe.transform(df)
+
+            self.momentum_fe = mom_fe
+            self.feature_log["momentum_features"] = list(mom_fe.feature_names_out_)
+            df = df.sort_values([self.datetime_col, self.sensor_col])
+
         return df.copy()
+    
 
     # ================================================================== #
     # 7-10  Horizon-specific part
@@ -563,6 +608,8 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 "lag_state":             safe_export(self.lag_fe),
                 "congestion_state":      safe_export(self.congestion_flagger),
                 "outlier_state":         safe_export(self.outlier_flagger),
+                "momentum_state":        safe_export(self.momentum_fe),
+    
                 "prediction_time_cyc_state": safe_export(self.pred_time_cyc_fe),
 
                 # Targets

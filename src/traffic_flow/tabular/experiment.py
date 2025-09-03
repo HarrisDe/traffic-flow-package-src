@@ -143,7 +143,7 @@ class TabularExperiment:
         )
         best_model_path, best_params, training_time, total_time = mt.tune_xgboost(
             use_gpu=self.cfg.xgb_use_gpu,
-            suppress_output=True,  # keep logs tidy; set False to see GridSearchCV progress
+            suppress_output=False,  # keep logs tidy; set False to see GridSearchCV progress
         )
 
         # 5) Evaluate with ModelEvaluator (from_path, using your ML frame)

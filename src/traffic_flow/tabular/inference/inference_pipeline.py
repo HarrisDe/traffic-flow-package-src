@@ -20,6 +20,7 @@ from ..features.congestion_outlier_features  import GlobalOutlierFlagger
 from ..features.historical_reference_features import PreviousWeekdayWindowFeatureEngineer
 from ..features.misc_features      import WeatherFeatureDropper
 from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureEngineer
+from ..features.momentum_features import MomentumFeatureEngineer
 from ...preprocessing.dtypes import enforce_dtypes
 from .prediction_protocol import make_prediction_frame
 from ...utils.helper_utils import LoggingMixin
@@ -62,6 +63,7 @@ class TrafficInferencePipeline(LoggingMixin):
         self.cong_flag    = PerSensorCongestionFlagger.from_state(states["congestion_state"])
         self.outlier_flag = GlobalOutlierFlagger.from_state(states["outlier_state"])
         self.weather_drop = WeatherFeatureDropper.from_state(states["weather_state"])
+     
 
         # optional features may be absent depending on training config
         self.prev_day_fe: Optional[PreviousWeekdayWindowFeatureEngineer] = None
@@ -69,7 +71,10 @@ class TrafficInferencePipeline(LoggingMixin):
             self.prev_day_fe = PreviousWeekdayWindowFeatureEngineer.from_state(
                 states["previous_day_state"]
             )
-        self.pred_time_cyc_fe = None
+        self.momentum_fe = None
+        mom_state = states.get("momentum_state")
+        if mom_state is not None:
+            self.momentum_fe = MomentumFeatureEngineer.from_state(mom_state)
         pt_state = states.get("prediction_time_cyc_state", None)
         if pt_state is not None:
             self.pred_time_cyc_fe = PredictionTimeCyclicalFeatureEngineer.from_state(pt_state)
@@ -130,6 +135,10 @@ class TrafficInferencePipeline(LoggingMixin):
         df = self.weather_drop.transform(df)
         if self.prev_day_fe is not None:
             df = self.prev_day_fe.transform(df)
+        if self.momentum_fe is not None:
+            df = df.sort_values(by=[self.sensor_col, self.datetime_col], kind="mergesort")
+            df = self.momentum_fe.transform(df)
+            df = df.sort_values(by=present, kind="mergesort").reset_index(drop=True)
         if self.pred_time_cyc_fe is not None:
             df = self.pred_time_cyc_fe.transform(df)
 
