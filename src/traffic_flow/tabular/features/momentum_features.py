@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-
-from typing import List, Dict, Any, Sequence, Optional
+from typing import Any, Dict, Optional, Sequence, List, Tuple
 import numpy as np
 import pandas as pd
 
@@ -111,6 +110,11 @@ class MomentumFeatureEngineer(BaseFeatureTransformer):
         if missing:
             raise ValueError(f"MomentumFeatureEngineer: missing columns {missing}")
         self.fitted_ = True
+        
+        print(f"MomentumFeatureEngineer: configured with slope_windows:{ self.slope_windows },\
+              ewm_halflives:{ self.ewm_halflives },vol_windows:{ self.vol_windows },\
+              minmax_windows:{ self.minmax_windows },thresholds_kph:{ self.thresholds_kph },\
+              ,fast_flag_window:{ self.fast_flag_window },drop_fast_flag:{ self.drop_fast_flag }")
         return self
 
     # ------------------------------- helpers --------------------------- #

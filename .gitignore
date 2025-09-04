@@ -66,6 +66,8 @@ scripts/*
 !scripts/compare_api_vs_local.py
 !scripts/compare_xgb_vs_lstm.ipynb
 !scripts/tabular_time_cyc_sweep.py
+!scripts/tabular_momentum_sweep.py
+!scripts/tabular_momentum_sweep_2.py
 # -------------------------------
 # Other
 # -------------------------------

@@ -1,4 +1,4 @@
-from typing import Optional, Union, Dict, List, Set
+from typing import Any, Dict, Optional, Sequence, List, Tuple, Union
 import warnings
 import os
 import pandas as pd
@@ -149,7 +149,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self,
         *,
         test_size: float = 1 / 3,
-        test_start_time: Optional[Union[str, pd.Timestamp]] = None,
+        test_start_time: Optional[str | pd.Timestamp] = None,
         filter_on_train_only: bool = False,
         filter_extreme_changes: bool = True,
         smooth_speeds: bool = True,
@@ -324,6 +324,11 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             self.momentum_fe = mom_fe
             self.feature_log["momentum_features"] = list(mom_fe.feature_names_out_)
             df = df.sort_values([self.datetime_col, self.sensor_col])
+            
+            # cache
+        self.base_df = df
+        self.smoothing_id_prev = self.smoothing_id
+        self.base_features_prepared = True
 
         return df.copy()
     
@@ -500,7 +505,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         *,
         # base args
         test_size: float = 1 / 3,
-        test_start_time: Optional[Union[str, pd.Timestamp]] = None,
+        test_start_time: Optional[str | pd.Timestamp] = None,
         filter_on_train_only: bool = False,
         filter_extreme_changes: bool = True,
         smooth_speeds: bool = True,

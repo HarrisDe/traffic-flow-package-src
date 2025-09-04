@@ -132,6 +132,8 @@ class TabularExperiment:
 
         # 3) Horizon-specific features & splits
         X_train, X_test, y_train, y_test = self._finalise_for_horizon(ork)
+        
+        print(f"X_train cols: {X_train.columns.tolist()}")
 
         # 4) Train/tune XGB with your ModelTunerXGB defaults
         mt = ModelTunerXGB(
