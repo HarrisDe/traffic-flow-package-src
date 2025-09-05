@@ -13,6 +13,7 @@ from ..features.congestion_features import CongestionFeatureEngineer
 from ..features.congestion_threshold import PerSensorCongestionFlagger
 from ..features.congestion_outlier_features    import GlobalOutlierFlagger
 from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureEngineer
+from ..features.adjacent_features_congestion import AdjacentSensorFeatureAdderCongestion
 from ..features.historical_reference_features import (
     PreviousWeekdayWindowFeatureEngineer,
 )
@@ -168,8 +169,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         lower_bound: float = 0.01,
         upper_bound: float = 0.99,
         use_median_instead_of_mean_smoothing: bool = False,
-        add_momentum_features: bool = True,
+        add_momentum_features: bool = False,
         momentum_params: dict | None = None,
+        add_adjacency_congestion_features: bool = False,
+        normalize_by_distance_congested: bool = False,
     ) -> pd.DataFrame:
         
         
@@ -297,6 +300,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.outlier_flagger    = outlier_flagger
         self.feature_log["congestion_features"] = cong_flagger.feature_names_out_ \
                                                 + outlier_flagger.feature_names_out_
+        # 6.5) Optional adjacency congestion features
+        if add_adjacency_congestion_features:
+            spatial_congested = AdjacentSensorFeatureAdderCongestion(
+            sensor_dict_path=self.sensor_dict_path,
+            spatial_adj=spatial_adj,
+            normalize_by_distance=normalize_by_distance_congested,
+            datetime_col=self.datetime_col,
+            value_col='is_congested',
+            sensor_col=self.sensor_col,
+            disable_logs=self.disable_logs,
+            smoothing_id=self.smoothing_id,
+        )
+            spatial_congested.fit(df)
+            df = spatial_congested.transform(df)
+            self.adjacency_fe_congested = spatial_congested
+            self.feature_log["spatial_features_congested"] = spatial_congested.feature_names_out_
+
 
         # remember where lag features start for legacy GMAN col position
         if self.feature_log["lag_features"]:
@@ -350,7 +370,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         drop_datetime: bool = True,
         drop_sensor_id: bool = True,
         add_prediction_time_cyclical_features: bool = True,
-        include_current_time_cyclical: bool = True,
+        include_current_time_cyclical: bool = False,
     ):  
         self.row_order = [self.datetime_col,self.sensor_col]
         
@@ -613,6 +633,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 "lag_state":             safe_export(self.lag_fe),
                 "congestion_state":      safe_export(self.congestion_flagger),
                 "outlier_state":         safe_export(self.outlier_flagger),
+                "adjacent_congestion_state": safe_export(self.adjacency_fe_congested),
                 "momentum_state":        safe_export(self.momentum_fe),
     
                 "prediction_time_cyc_state": safe_export(self.pred_time_cyc_fe),

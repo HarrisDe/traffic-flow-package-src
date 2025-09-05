@@ -21,6 +21,7 @@ from ..features.historical_reference_features import PreviousWeekdayWindowFeatur
 from ..features.misc_features      import WeatherFeatureDropper
 from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureEngineer
 from ..features.momentum_features import MomentumFeatureEngineer
+from ..features.adjacent_features_congestion import AdjacentSensorFeatureAdderCongestion
 from ...preprocessing.dtypes import enforce_dtypes
 from .prediction_protocol import make_prediction_frame
 from ...utils.helper_utils import LoggingMixin
@@ -71,10 +72,19 @@ class TrafficInferencePipeline(LoggingMixin):
             self.prev_day_fe = PreviousWeekdayWindowFeatureEngineer.from_state(
                 states["previous_day_state"]
             )
+        # --- optional: adjacent congestion ---
+        self.adj_cong: Optional[AdjacentSensorFeatureAdderCongestion] = None
+
+        # prefer a consistent key name; support either for backward compat
+        adj_cong_state = states.get("adjacent_congestion_state")
+        if adj_cong_state:
+            self.adj_cong = AdjacentSensorFeatureAdderCongestion.from_state(adj_cong_state)
+        
         self.momentum_fe = None
         mom_state = states.get("momentum_state")
         if mom_state is not None:
             self.momentum_fe = MomentumFeatureEngineer.from_state(mom_state)
+        self.pred_time_cyc_fe: Optional[PredictionTimeCyclicalFeatureEngineer] = None
         pt_state = states.get("prediction_time_cyc_state", None)
         if pt_state is not None:
             self.pred_time_cyc_fe = PredictionTimeCyclicalFeatureEngineer.from_state(pt_state)
@@ -107,18 +117,11 @@ class TrafficInferencePipeline(LoggingMixin):
         )
 
         if cfg.get("smooth_speeds", True):
-            df = smooth_speeds(df, sensor_col="sensor_id", value_col="value",
+            df = smooth_speeds(df, sensor_col=self.sensor_col, value_col=self.value_col,
                             window_size=cfg["smoothing_window"],
                             use_median=cfg["use_median"])
         
-        
-        # Apply extreme-change filtering only if the training test-path had it.
-        # If training used filter_on_train_only=True, test rows were NOT filtered,
-        # so do NOT filter at inference either:
-        # if cfg.get("filter_extreme_changes", True) and not cfg.get("filter_on_train_only", False):
-        #     df = filter_and_interpolate_extremes(
-        #         df, sensor_col="sensor_id", value_col="value",
-        #         threshold=cfg["relative_threshold"])
+    
         
    
         present = [c for c in self.row_order if c in df.columns]
@@ -135,6 +138,8 @@ class TrafficInferencePipeline(LoggingMixin):
         df = self.weather_drop.transform(df)
         if self.prev_day_fe is not None:
             df = self.prev_day_fe.transform(df)
+        if self.adj_cong is not None:
+            df = self.adj_cong.transform(df)
         if self.momentum_fe is not None:
             df = df.sort_values(by=[self.sensor_col, self.datetime_col], kind="mergesort")
             df = self.momentum_fe.transform(df)
@@ -159,7 +164,9 @@ class TrafficInferencePipeline(LoggingMixin):
         
         if not self.keep_datetime and self.datetime_col in df_final.columns:
             # drop it if not needed
-            df_final = df_final.drop(columns=[self.datetime_col,self.sensor_col])
+            to_drop = [c for c in (self.datetime_col, self.sensor_col) if c in df_final.columns]
+            if to_drop:
+                df_final = df_final.drop(columns=[self.datetime_col,self.sensor_col])
 
         # Safety: fill any all-null columns (shouldn't happen normally)
         missing = df_final.columns[df_final.isna().all()]
@@ -170,32 +177,4 @@ class TrafficInferencePipeline(LoggingMixin):
         return df_final
     
    
-    # def predict(
-    #     self,
-    #     df_raw: pd.DataFrame,
-    #     model,
-    #     *,
-    #     horizon_min: Optional[int] = None,
-    #     add_total: bool = True,
-    #     sensor_col: str = "sensor_id",
-    # ) -> pd.DataFrame:
-    #     """
-    #     Run transform + model.predict and return the canonical prediction frame.
-    #     """
-    #     feats = self.transform(df_raw)
-    #     feats = feats.reindex(columns=self.expected_cols, copy=False)
-    #     pred_delta = model.predict(feats)
-    #     # infer horizon from saved states if not passed
-    #     if horizon_min is None:
-    #         # try target_state (depends on your export)
-    #         horizon_min = int(self.states.get("target_state", {}).get("horizon_min", 15))
-    #     return make_prediction_frame(
-    #         df_raw=df_raw,
-    #         feats=feats,
-    #         pred_delta=pred_delta,
-    #         states=self.states,
-    #         horizon_min=horizon_min,
-    #         add_total=add_total,
-    #         sensor_col=sensor_col,
-    #     ) 
 

@@ -56,7 +56,8 @@ class DataCfg:
     # Horizon and time-feature toggles we sweep
     horizon: int = 15
     add_prediction_time_cyclical_features: bool = True
-    include_current_time_cyclical: bool = True
+    include_current_time_cyclical: bool = False
+
 
     # Orchestrator configuration
     orchestrator_kwargs: Dict[str, Any] = field(default_factory=dict)
@@ -80,11 +81,17 @@ class TabularExperiment:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     def _make_run_id(self) -> str:
-        # Run id based on the features we sweep (+ horizon for clarity)
-        return "h{h}_cyc{cyc}_curr{curr}".format(
-            h=self.cfg.horizon,
-            cyc=int(self.cfg.add_prediction_time_cyclical_features),
-            curr=int(self.cfg.include_current_time_cyclical),
+        pk = self.cfg.prepare_kwargs or {}
+        k   = int(pk.get("spatial_adj", 1))
+        qt  = float(pk.get("quantile_threshold", 0.90))
+        qp  = float(pk.get("quantile_percentage", 0.65))
+        ac  = int(bool(pk.get("add_adjacency_congestion_features", False)))
+        adn = int(bool(pk.get("normalize_by_distance_congested", False)))
+        
+        return (
+            f"h{self.cfg.horizon}"
+            f"_k{k}_qt{qt:.2f}_qp{int(round(qp*100))}"
+            f"_adjC{ac}_adjNorm{adn}"
         )
 
     def _build_pipeline(self) -> TrafficDataPipelineOrchestrator:
@@ -161,9 +168,17 @@ class TabularExperiment:
         flat_metrics = self._flatten_metrics(eval_out)
 
         # 6) Assemble row
+        # 6) Assemble row
+        pk  = self.cfg.prepare_kwargs or {}
         row: Dict[str, Any] = {
             "run_id": self._make_run_id(),
             **asdict(self.cfg),
+            # flatten the key knobs for filtering/pivoting later
+            "spatial_adj":                        pk.get("spatial_adj", None),
+            "quantile_threshold":                 pk.get("quantile_threshold", None),
+            "quantile_percentage":                pk.get("quantile_percentage", None),
+            "add_adjacency_congestion_features":  pk.get("add_adjacency_congestion_features", None),
+            "normalize_by_distance_congested":    pk.get("normalize_by_distance_congested", None),
             "best_model_path": str(best_model_path),
             "best_params": json.dumps(best_params),
             "training_time_s": float(training_time),

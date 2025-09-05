@@ -68,6 +68,7 @@ scripts/*
 !scripts/tabular_time_cyc_sweep.py
 !scripts/tabular_momentum_sweep.py
 !scripts/tabular_momentum_sweep_2.py
+!scripts/tabular_adj_congestion_sweep.py
 # -------------------------------
 # Other
 # -------------------------------
