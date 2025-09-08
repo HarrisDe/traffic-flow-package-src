@@ -69,6 +69,7 @@ scripts/*
 !scripts/tabular_momentum_sweep.py
 !scripts/tabular_momentum_sweep_2.py
 !scripts/tabular_adj_congestion_sweep.py
+!scripts/run_tabular_upstream_shift_sweep.py
 # -------------------------------
 # Other
 # -------------------------------

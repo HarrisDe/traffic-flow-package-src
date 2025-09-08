@@ -22,6 +22,7 @@ from ..features.misc_features      import WeatherFeatureDropper
 from ..features.calendar_cyclical_features import PredictionTimeCyclicalFeatureEngineer
 from ..features.momentum_features import MomentumFeatureEngineer
 from ..features.adjacent_features_congestion import AdjacentSensorFeatureAdderCongestion
+from ..features.upstream_shifted_features import UpstreamTravelTimeShiftedFeatures
 from ...preprocessing.dtypes import enforce_dtypes
 from .prediction_protocol import make_prediction_frame
 from ...utils.helper_utils import LoggingMixin
@@ -88,6 +89,12 @@ class TrafficInferencePipeline(LoggingMixin):
         pt_state = states.get("prediction_time_cyc_state", None)
         if pt_state is not None:
             self.pred_time_cyc_fe = PredictionTimeCyclicalFeatureEngineer.from_state(pt_state)
+        
+        self.upstream_shifted_fe = None
+        upstream_shifted_state = states.get("upstream_shifted_state") 
+        if upstream_shifted_state is not None:
+            self.upstream_shifted_fe = UpstreamTravelTimeShiftedFeatures.from_state(
+                states["upstream_shifted_state"])
 
         # --- meta --------------------------------------------------
         self.clean_cfg: Dict[str, Any] = states["clean_state"]
@@ -144,6 +151,11 @@ class TrafficInferencePipeline(LoggingMixin):
             df = df.sort_values(by=[self.sensor_col, self.datetime_col], kind="mergesort")
             df = self.momentum_fe.transform(df)
             df = df.sort_values(by=present, kind="mergesort").reset_index(drop=True)
+        if self.upstream_shifted_fe is not None:
+            df = df.sort_values(by=[self.sensor_col, self.datetime_col], kind="mergesort")
+            df = self.upstream_shifted_fe.transform(df)
+            df = df.sort_values(by=present, kind="mergesort").reset_index(drop=True)
+            
         if self.pred_time_cyc_fe is not None:
             df = self.pred_time_cyc_fe.transform(df)
 
