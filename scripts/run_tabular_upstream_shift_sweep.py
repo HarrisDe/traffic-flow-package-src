@@ -31,8 +31,7 @@ def load_completed(path: Path) -> set[str]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--file-path", type=str, required=True,
-                    help="Raw data path for TrafficDataPipelineOrchestrator")
+    ap.add_argument("--file-path", type=str, default="../../data/NDW/ndw_three_weeks.parquet")
     ap.add_argument("--horizon", type=int, default=15)
     ap.add_argument("--artifacts-dir", type=str, default="./results_tabular")
     ap.add_argument("--results-csv", type=str, default="tabular_xgb_results_upstream_shift.csv")
