@@ -2,58 +2,32 @@
 # -*- coding: utf-8 -*-
 
 """
-Run several experiments varying MomentumFeatureEngineer settings.
+Sweep MomentumFeatureEngineer configs targeted at bottlenecks (30/50/70 kph)
+across multiple horizons, with skip-if-completed logic.
 
-Defaults in this sweep:
-- include_current_time_cyclical = False
+Fixed in this sweep:
 - add_prediction_time_cyclical_features = True
+- include_current_time_cyclical        = False
 
 Usage:
-  python scripts/run_tabular_momentum_sweep.py --file-path /path/to/raw.parquet --horizon 15
-
-Notes:
-- We forward file_path (and any other pipeline args) via orchestrator_kwargs.
-- Momentum features are injected via prepare_base_features(add_momentum_features=True, momentum_params=...).
+  python scripts/run_tabular_momentum_bottleneck_sweep.py \
+      --file-path /path/to/raw.parquet --horizon 15   # <-- --horizon is ignored here; we sweep fixed list
 """
 
 import argparse
+from pathlib import Path
+from typing import Set, Tuple
+
+import pandas as pd
+
 from traffic_flow.tabular.experiment import DataCfg, TabularExperiment
 
 
-def parse_args():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--file-path", type=str, required=True, help="Raw data path for TrafficDataPipelineOrchestrator")
-    ap.add_argument("--horizon", type=int, default=15)
-    ap.add_argument("--artifacts-dir", type=str, default="./results_tabular")
-    ap.add_argument("--results-csv", type=str, default="tabular_xgb_results_momentum.csv")
-    ap.add_argument("--test-size", type=float, default=1.0/3.0)
-    ap.add_argument("--use-gpu", action="store_true", help="If set, use GPU for XGB (gpu_hist)")
-    return ap.parse_args()
+# ---------------------------- config ---------------------------- #
 
+HORIZONS = [5, 10, 15, 30, 45, 60]
 
-def main():
-    args = parse_args()
-
-    orchestrator_kwargs = {
-        "file_path": args.file_path,
-        # Add explicit column names here if your orchestrator requires them
-        # "datetime_col": "date",
-        # "target_col": "value",
-        # "sensor_id_col": "sensor_id",
-    }
-
-    # Fixed time-encoding defaults for this sweep
-    add_prediction_time_cyclical_features = True
-    include_current_time_cyclical = False
-
-    # Base prepare kwargs (we'll inject momentum toggles/config per run)
-    base_prepare_kwargs = {
-        "test_size": args.test_size,
-        # We'll add: "add_momentum_features": True, "momentum_params": {...} per run
-    }
-
-    # A small set of momentum configurations to probe
-    momentum_grid = [
+MOMENTUM_GRID = [
         # ID,   params
         (
             "m1_fast",
@@ -109,38 +83,117 @@ def main():
         ),
     ]
 
-    for mom_id, mom_params in momentum_grid:
-        prepare_kwargs = dict(base_prepare_kwargs)
-        prepare_kwargs.update({
-            "add_momentum_features": True,
-            "momentum_params": mom_params,
-        })
 
-        cfg = DataCfg(
-            artifacts_dir=args.artifacts_dir,
-            results_csv_name=args.results_csv,
-            horizon=args.horizon,
-            orchestrator_kwargs=orchestrator_kwargs,
-            prepare_kwargs=prepare_kwargs,
-            xgb_model_name=f"xgb_momentum_{mom_id}",
-            xgb_use_gpu=bool(args.use_gpu),
+# ----------------------------- CLI ------------------------------ #
 
-            # Time-encoding defaults as requested:
-            add_prediction_time_cyclical_features=add_prediction_time_cyclical_features,
-            include_current_time_cyclical=include_current_time_cyclical,
-        )
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--file-path", type=str, required=True,
+                    help="Raw data path for TrafficDataPipelineOrchestrator")
+    ap.add_argument("--artifacts-dir", type=str, default="./results_tabular")
+    ap.add_argument("--results-csv", type=str,
+                    default="tabular_xgb_results_momentum_bottlenecks.csv")
+    ap.add_argument("--test-size", type=float, default=1.0/3.0)
+    ap.add_argument("--use-gpu", action="store_true",
+                    help="If set, use GPU for XGB (gpu_hist)")
+    return ap.parse_args()
 
-        exp = TabularExperiment(cfg)
-        row = exp.run()
 
-        # quick console feedback
-        print(
-            f"[done] {row.get('run_id','<no_id>')} | tag={mom_id} | "
-            f"MAE={row.get('model_MAE', float('nan'))} "
-            f"RMSE={row.get('model_RMSE', float('nan'))} "
-            f"MAPE%={row.get('model_MAPE', float('nan'))} "
-            f"SMAPE%={row.get('model_SMAPE', float('nan'))}"
-        )
+# ------------------------- helpers ------------------------------ #
+
+def load_done_pairs(csv_path: Path) -> Set[Tuple[str, str]]:
+    """
+    Return set of (run_id, xgb_model_name) pairs already present in the CSV.
+    Safeguards against duplicates across different momentum configs.
+    """
+    if not csv_path.exists():
+        return set()
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return set()
+
+    need_cols = {"run_id", "xgb_model_name"}
+    if not need_cols.issubset(df.columns):
+        return set()
+
+    return set((str(rid), str(name)) for rid, name in zip(df["run_id"], df["xgb_model_name"]))
+
+
+def make_run_id(h: int, cyc_pred: bool, cyc_curr: bool) -> str:
+    """Mirror TabularExperiment._make_run_id."""
+    return f"h{h}_cyc{int(cyc_pred)}_curr{int(cyc_curr)}"
+
+
+# ----------------------------- main ----------------------------- #
+
+def main():
+    args = parse_args()
+    artifacts_dir = Path(args.artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    results_csv = artifacts_dir / args.results_csv
+
+    # Fixed time encodings for this sweep
+    add_prediction_time_cyclical_features = True
+    include_current_time_cyclical = False
+
+    # Prepare base orchestrator kwargs and base prepare kwargs
+    orchestrator_kwargs = {"file_path": args.file_path}
+    base_prepare_kwargs = {"test_size": args.test_size}
+
+    # Load (run_id, model_name) pairs already done
+    done = load_done_pairs(results_csv)
+
+    for h in HORIZONS:
+        # ---------- Baseline: momentum OFF ----------
+        run_id = make_run_id(h, add_prediction_time_cyclical_features, include_current_time_cyclical)
+        model_name = f"xgb_nomomentum_h{h}"
+
+        if (run_id, model_name) in done:
+            print(f"[skip] {run_id} | {model_name} already in {results_csv.name}")
+        else:
+            cfg = DataCfg(
+                artifacts_dir=str(artifacts_dir),
+                results_csv_name=results_csv.name,
+                horizon=h,
+                orchestrator_kwargs=orchestrator_kwargs,
+                prepare_kwargs={**base_prepare_kwargs,
+                                "add_momentum_features": False},  # disable
+                xgb_model_name=model_name,
+                xgb_use_gpu=bool(args.use_gpu),
+                add_prediction_time_cyclical_features=add_prediction_time_cyclical_features,
+                include_current_time_cyclical=include_current_time_cyclical,
+            )
+            row = TabularExperiment(cfg).run()
+            print(f"[done] {row['run_id']} | {model_name} | "
+                  f"MAE={row.get('model_MAE', float('nan'))}  RMSE={row.get('model_RMSE', float('nan'))}")
+
+        # ---------- Momentum configs ----------
+        for tag, mom_params in MOMENTUM_GRID:
+            model_name = f"xgb_momentum_{tag}_h{h}"
+
+            if (run_id, model_name) in done:
+                print(f"[skip] {run_id} | {model_name} already in {results_csv.name}")
+                continue
+
+            cfg = DataCfg(
+                artifacts_dir=str(artifacts_dir),
+                results_csv_name=results_csv.name,
+                horizon=h,
+                orchestrator_kwargs=orchestrator_kwargs,
+                prepare_kwargs={**base_prepare_kwargs,
+                                "add_momentum_features": True,
+                                "momentum_params": mom_params},
+                xgb_model_name=model_name,
+                xgb_use_gpu=bool(args.use_gpu),
+                add_prediction_time_cyclical_features=add_prediction_time_cyclical_features,
+                include_current_time_cyclical=include_current_time_cyclical,
+            )
+            row = TabularExperiment(cfg).run()
+            print(f"[done] {row['run_id']} | {model_name} | "
+                  f"MAE={row.get('model_MAE', float('nan'))}  RMSE={row.get('model_RMSE', float('nan'))}")
+
 
 if __name__ == "__main__":
     main()
+

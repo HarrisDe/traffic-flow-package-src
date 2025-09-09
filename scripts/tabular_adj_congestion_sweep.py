@@ -34,7 +34,7 @@ def load_completed(path: Path) -> set[str]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--file-path", default="../../data/NDW/ndw_three_weeks.parquet")
-    ap.add_argument("--horizon", type=int, default=15)
+    ap.add_argument("--horizon", type=int, default=5)
     ap.add_argument("--artifacts-dir", default="./results_tabular")
     ap.add_argument("--results-csv", default="tabular_xgb_results_adj_cong_horizon_15.csv")
     ap.add_argument("--use-gpu", action="store_true")
