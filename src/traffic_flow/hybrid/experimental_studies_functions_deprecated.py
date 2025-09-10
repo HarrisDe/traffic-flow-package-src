@@ -12,7 +12,7 @@ import time
 import os
 import sys
 import random
-random.seed(69); np.random.seed(69); tf.random.set_seed(69)
+
 
 
 # gman_path = os.path.abspath("src/GMAN")
@@ -27,62 +27,69 @@ gman_path = os.path.abspath("src/GMAN")
 sys.path.append(gman_path)
 print(f'working directory: {os.getcwd()}')
 print(f"gman_path: {gman_path}")
-
+tf.compat.v1.disable_eager_execution()
 # Print the current working directory to verify module search paths
 print("Current working directory:", os.getcwd())
 import utils
 import model
 
+def set_random_seed(seed: int = 42, use_gpu: bool = True):
+    """
+    Set the random seed for Python, NumPy, and TensorFlow (TF 1.x) 
+    to ensure experiment reproducibility.
 
-# --- TF2 niceties ---
-def _enable_gpu_memory_growth():
-    import tensorflow as tf
-    try:
-        for g in tf.config.list_physical_devices("GPU"):
-            tf.config.experimental.set_memory_growth(g, True)
-    except Exception:
-        pass
+    Optionally disables GPU usage for full determinism.
+
+    Args:
+        seed (int): The random seed to use for reproducibility.
+        use_gpu (bool): 
+            If False, disables GPU usage by setting CUDA_VISIBLE_DEVICES = '-1'.
+            This is useful for achieving completely deterministic behavior.
+            If True (default), uses available GPU but may introduce some nondeterminism.
+
+    Usage:
+        >>> from utils import set_random_seed
+        >>> set_random_seed(seed=123, use_gpu=True)
+    """
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.compat.v1.set_random_seed(seed)
+
+    if not use_gpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        print("GPU disabled for reproducibility (CUDA_VISIBLE_DEVICES = -1)")
+    else:
+        print("GPU enabled. Note: some TensorFlow ops may still be non-deterministic.")
 
 
-class _ValTimerCallback(tf.keras.callbacks.Callback):
-    """Capture last epoch's validation timing during model.fit(..., validation_data=...)."""
-    def __init__(self):
-        super().__init__()
-        import time
-        self._time = time
-        self.last_val_start = None
-        self.last_val_end = None
+def load_data(args, log):
+    """
+    Load and preprocess the dataset.
 
-    # Keras triggers test-begin/-end hooks for validation inside fit
-    def on_test_begin(self, logs=None):
-        self.last_val_start = self._time.time()
+    Args:
+        args (Namespace): Command-line arguments or configuration parameters.
+        log (file object): Log file to record progress and messages.
 
-    def on_test_end(self, logs=None):
-        self.last_val_end = self._time.time()
-        
+    Returns:
+        tuple: (trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY, SE, mean, std)
+    """
+    if log is not None:
+        utils.log_string(log, 'loading data...')
+    # Load data using the utils.loadData function
+    (trainX, trainTE, trainY,
+     valX, valTE, valY,
+     testX, testTE, testY,
+     SE, mean, std) = utils.loadData(args)
+    # Log the shapes of the loaded data
+    if log is not None:
+        utils.log_string(
+            log, f'trainX: {trainX.shape}\ttrainY: {trainY.shape}')
+        utils.log_string(log, f'valX: {valX.shape}\tvalY: {valY.shape}')
+        utils.log_string(log, f'testX: {testX.shape}\ttestY: {testY.shape}')
+        utils.log_string(log, 'data loaded!')
+    return trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY, SE, mean, std
 
-
-class BNMomentumScheduler(tf.keras.callbacks.Callback):
-    def __init__(self, steps_per_epoch, decay_epoch, initial=0.5, decay_rate=0.5):
-        super().__init__()
-        self.steps_per_epoch = max(1, int(steps_per_epoch))
-        self.decay_epoch = max(1, int(decay_epoch))
-        self.initial = float(initial)
-        self.decay_rate = float(decay_rate)
-        self.global_step = 0
-
-    def on_train_batch_end(self, batch, logs=None):
-        self.global_step += 1
-        # TF1 formula:
-        # bn_momentum = initial * (decay_rate ** floor(global_step / decay_steps))
-        decay_steps = self.decay_epoch * self.steps_per_epoch
-        power = self.global_step // max(1, decay_steps)
-        bn_momentum = self.initial * (self.decay_rate ** power)
-        bn_decay = min(0.99, 1.0 - bn_momentum)  # Keras BN "momentum"
-
-        for layer in self.model.layers:
-            if isinstance(layer, tf.keras.layers.BatchNormalization):
-                layer.momentum = bn_decay
 
 def build_gman_old(args, SE, T, N, log, num_train, mean, std):
     """
@@ -189,9 +196,7 @@ def build_gman(args, SE, T, N, log, num_train, mean, std):
         decay_rate=0.7,
         staircase=True,
     )
-    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule,
-                                         epsilon=1e-8,         # <-- match TF1 default
-                                         )
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
     # Use your existing masked last-step MAE as a Keras loss
     net.compile(optimizer=optimizer, loss=gman_model.last_step_masked_mae_keras)
@@ -323,60 +328,6 @@ def train_gman_old(args, sess, X, TE, label, is_training, train_op, loss,
 
 def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
     """
-    TF2/Keras training with:
-    - EarlyStopping (patience=args.patience, restore best)
-    - ModelCheckpoint (best .keras)
-    - Validation timing captured via callback
-
-    Returns:
-        best_epoch, start_train, end_train, start_val, end_val
-    """
-    import os, time, numpy as np, tensorflow as tf
-
-    
-    steps_per_epoch = max(1, trainX.shape[0] // max(1, args.batch_size))
-    bn_sched = BNMomentumScheduler(
-        steps_per_epoch=steps_per_epoch,
-        decay_epoch=args.decay_epoch,
-        initial=0.5, decay_rate=0.5
-    )
-    
-    
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor="val_loss", patience=args.patience, restore_best_weights=True
-        ),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(args.log_dir or ".", "gman_best.keras"),
-            monitor="val_loss", save_best_only=True
-        ),
-    ]
-    val_timer = _ValTimerCallback()
-    callbacks.append(val_timer)
-
-    start_train = time.time()
-    hist = net.fit(
-        x=[trainX, trainTE], y=trainY,
-        validation_data=([valX, valTE], valY),
-        epochs=args.max_epoch, batch_size=args.batch_size,
-        callbacks=callbacks, verbose=1, shuffle=True,
-    )
-    # Derive timings
-    start_val = val_timer.last_val_start if val_timer.last_val_start is not None else time.time()
-    end_val   = val_timer.last_val_end   if val_timer.last_val_end   is not None else start_val
-    end_train = start_val  # training part ends where last validation begins
-
-    # Best epoch (1-based)
-    best_epoch = int(np.argmin(hist.history["val_loss"])) + 1
-
-    if log is not None:
-        from .GMAN import utils
-        utils.log_string(log, f"Training complete. Best epoch: {best_epoch}")
-    return best_epoch, start_train, end_train, start_val, end_val
-
-
-def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
-    """
     TF2 training: returns (best_epoch, start_train, end_train, end_val)
     to keep your downstream timing/CSV logic unchanged.
     """
@@ -408,6 +359,70 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
     return best_epoch, start_train, end_train, end_val
 
 
+def test_gman(args, sess, X, TE, is_training, pred, testX, testTE, testY, log):
+    """
+    Test the GMAN model.
+
+    Args:
+        args (Namespace): Command-line arguments or configuration parameters.
+        sess (tf.Session): TensorFlow session.
+        X (tf.Tensor): Placeholder for input features.
+        TE (tf.Tensor): Placeholder for temporal embeddings.
+        is_training (tf.Tensor): Placeholder for training mode.
+        pred (tf.Tensor): Model predictions.
+        testX (np.ndarray): Test input data.
+        testTE (np.ndarray): Test temporal embeddings.
+        testY (np.ndarray): Test ground truth labels.
+        log (file object): Log file to record progress and messages.
+
+    Returns:
+        tuple: (testPred, start_test, end_test, batch_results_df)
+    """
+    saver = tf.compat.v1.train.import_meta_graph(args.model_file + '.meta')
+    saver.restore(sess, args.model_file)
+    num_test = testX.shape[0]
+    testPred = []
+    batch_results = []
+    num_batch = math.ceil(num_test / args.batch_size)
+    # Read dataset timestamps to get the corresponding timestamps for testY
+    timestamps_testY = utils.loadData(args, output_timestamps=True)
+    df = pd.read_csv(args.traffic_file, index_col=0)
+    sensor_ids = df.columns.tolist()
+    start_test = time.time()
+    # Testing loop
+    for batch_idx in range(num_batch):
+        start_idx = batch_idx * args.batch_size
+        end_idx = min(num_test, (batch_idx + 1) * args.batch_size)
+        feed_dict = {
+            X: testX[start_idx: end_idx],
+            TE: testTE[start_idx: end_idx],
+            is_training: False
+        }
+        pred_batch = sess.run(pred, feed_dict=feed_dict)
+        actual_batch = testY[start_idx: end_idx]
+        testPred.append(pred_batch)
+        timestamps_batch = timestamps_testY[start_idx: end_idx]
+        for i in range(len(pred_batch)):
+            sample_nr = start_idx + i + 1
+            for t in range(args.Q):
+                timestamp = timestamps_batch[i, t]
+                timestamp = utils.convert_timestamp_data(timestamp)
+                # Dictionary to store current row data
+                row_data = {
+                    'batch_nr': batch_idx + 1,
+                    'sample_nr': sample_nr,
+                    'timestamp': timestamp,
+                    'timestep': t + 1,
+                }
+                # Add actual and predicted values for each sensor
+                for s, sensor_name in enumerate(sensor_ids):
+                    row_data[sensor_name] = actual_batch[i, t, s]
+                    row_data[f"{sensor_name}_pred"] = pred_batch[i, t, s]
+                batch_results.append(row_data)
+    testPred = np.concatenate(testPred, axis=0)
+    end_test = time.time()
+    batch_results_df = pd.DataFrame(batch_results)
+    return testPred, start_test, end_test, batch_results_df
 
 
 def test_gman_opt_old(args, sess, X, TE, is_training, pred, testX, testTE, testY, log):
@@ -503,76 +518,15 @@ def test_gman_opt_old(args, sess, X, TE, is_training, pred, testX, testTE, testY
 
     return pred_flat, start_test, end_test, batch_results_df
 
-def test_gman_opt(args, net, testX, testTE, testY, log=None):
+def test_gman_opt(args, net, testX, testTE, testY):
     """
-    TF2/Keras test:
-    Returns:
-        testPred: np.ndarray of shape (num_test, Q, N)
-        start_test: float (epoch seconds)
-        end_test:   float
-        batch_results_df: pd.DataFrame same schema as _old version:
-          ['batch_nr','sample_nr','timestep','timestamp', <sensor>, <sensor>_pred, ...]
+    Returns (testPred, start_test, end_test)
     """
-    import time, numpy as np, pandas as pd
-    from . import utils as _u  # already imported above as "import utils", but safe here
-
-    num_test = testX.shape[0]
-    num_timesteps = testY.shape[1]
-    N = testY.shape[2]
-
-    # Resolve sensor ids
-    if getattr(args, "traffic_file", None):
-        try:
-            sensor_ids = pd.read_csv(args.traffic_file, index_col=0).columns.tolist()
-        except Exception:
-            sensor_ids = [f"S{i}" for i in range(N)]
-    elif getattr(args, "df_gman", None) is not None:
-        try:
-            sensor_ids = args.df_gman.drop("test_set", axis=1).columns.tolist()
-        except Exception:
-            sensor_ids = [f"S{i}" for i in range(N)]
-    else:
-        sensor_ids = [f"S{i}" for i in range(N)]
-
-    # Timestamps for test set (shape to (num_test, num_timesteps))
-    ts = _u.loadData_test_set_as_input_column(args, output_timestamps=True)
-    # Robustly coerce to ndarray
-    if isinstance(ts, tuple):
-        ts = ts[0]
-    timestamps_testY = np.array(ts).reshape(num_test, num_timesteps)
-
-    # Predict
+    import time
     start_test = time.time()
     testPred = net.predict([testX, testTE], batch_size=args.batch_size, verbose=0)
     end_test = time.time()
-
-    # Build per-step long dataframe like the _old implementation
-    pred_flat   = testPred.reshape(-1, N)   # (num_test*num_timesteps, N)
-    actual_flat = testY.reshape(-1, N)
-    timestamps_flat = timestamps_testY.reshape(-1)
-
-    # Convert to human-readable timestamps
-    convert_ts = np.vectorize(_u.convert_timestamp_data)
-    timestamps_converted = convert_ts(timestamps_flat)
-
-    # Batch numbers (1-based), per *sample* then repeated across timesteps
-    sample_idx = np.arange(num_test)
-    batch_nr_per_sample = (sample_idx // max(1, args.batch_size)) + 1
-    batch_nrs_flat = np.repeat(batch_nr_per_sample, num_timesteps)
-
-    data_dict = {
-        "batch_nr": batch_nrs_flat,
-        "sample_nr": np.repeat(np.arange(1, num_test + 1), num_timesteps),
-        "timestep": np.tile(np.arange(1, num_timesteps + 1), num_test),
-        "timestamp": timestamps_converted,
-    }
-    for s, name in enumerate(sensor_ids):
-        data_dict[name] = actual_flat[:, s]
-        data_dict[f"{name}_pred"] = pred_flat[:, s]
-
-    batch_results_df = pd.DataFrame(data_dict)
-
-    return testPred, start_test, end_test, batch_results_df
+    return testPred, start_test, end_test
 
 
 def log_metrics(log, testPred, testY, args, start_test, end_test,
@@ -663,6 +617,81 @@ def log_metrics(log, testPred, testY, args, start_test, end_test,
     return last_AE, last_RMSE, last_MAPE, last_MAPE_values, last_smape, last_smape_values
 
 
+def create_results_df(args, testPred, testY):
+    """
+    Create a DataFrame containing predictions and ground truth for the last timestep.
+
+    Args:
+        testPred (np.ndarray): Test predictions.
+        testY (np.ndarray): Test ground truth labels.
+    """
+    # Extract predictions and ground truth for the last timestep
+    last_timestep_predictions = testPred[:, -1]
+    last_timestep_ground_truth = testY[:, -1]
+    # Read sensor IDs from the traffic file (skipping timestamp column)
+    sensor_ids = pd.read_csv(args.traffic_file, nrows=1).columns[1:]
+    # Read the full dataset to get timestamps
+    df = pd.read_csv(args.traffic_file, index_col=0)
+    # Create DataFrame for sensor-level details
+    sensor_results_df = pd.DataFrame({
+        'sensor_id': np.repeat(sensor_ids, len(timestamps)),
+        'timestamp': np.tile(timestamps, len(sensor_ids)),
+        'y_act': last_timestep_ground_truth.flatten(),
+        'y_pred': last_timestep_predictions.flatten(),
+    })
+    # Sort by sensor_id and timestamp
+    sensor_results_df = sensor_results_df.sort_values(
+        by=['sensor_id', 'timestamp']).reset_index(drop=True)
+
+
+def measure_gman_test_time(args, sess, X, TE, is_training, pred, testX, testTE, log):
+    """
+    Measure the inference time of the GMAN model without storing results.
+
+    Args:
+        args (Namespace): Configuration parameters.
+        sess (tf.Session): TensorFlow session.
+        X (tf.Tensor): Placeholder for input features.
+        TE (tf.Tensor): Placeholder for temporal embeddings.
+        is_training (tf.Tensor): Training mode indicator.
+        pred (tf.Tensor): Model predictions.
+        testX (np.ndarray): Test input data.
+        testTE (np.ndarray): Test temporal embeddings.
+        log (file object): Log file.
+
+    Returns:
+        tuple: (testPred, test_duration)
+    """
+    utils.log_string(log, '**** measuring GMAN test time ****')
+    utils.log_string(log, f'loading model from {args.model_file}')
+    saver = tf.compat.v1.train.import_meta_graph(args.model_file + '.meta')
+    saver.restore(sess, args.model_file)
+    utils.log_string(log, 'model restored!')
+    utils.log_string(log, 'starting inference...')
+
+    num_test = testX.shape[0]
+    num_batch = math.ceil(num_test / args.batch_size)
+    testPred = []
+    start_test = time.time()
+
+    for batch_idx in range(num_batch):
+        start_idx = batch_idx * args.batch_size
+        end_idx = min(num_test, (batch_idx + 1) * args.batch_size)
+        feed_dict = {
+            X: testX[start_idx:end_idx],
+            TE: testTE[start_idx:end_idx],
+            is_training: False
+        }
+        pred_batch = sess.run(pred, feed_dict=feed_dict)
+        testPred.append(pred_batch)
+
+    testPred = np.concatenate(testPred, axis=0)
+    end_test = time.time()
+    test_duration = end_test - start_test
+    utils.log_string(
+        log, f'Inference completed in {test_duration:.4f} seconds.')
+    return testPred, test_duration
+
 
 
 
@@ -740,170 +769,175 @@ def save_results(args, results_dir, results_filename, AE, RMSE, MAPE, SMAPE,
     print(f"✅ Metrics saved to {results_file}")
 
 
-
-# def run_gman_light_test_set_as_input_column(P=21, Q=15, learning_rate=0.001, L=3, K=8, max_epoch=1,
-#                                             patience=5, batch_size=16,
-#                                             traffic_file="data/NDW/ndw_three_weeks_gman.csv",
-#                                             df_gman=None,
-#                                             train_ratio=0.2,  # Only define val_ratio now
-#                                             enable_logging=False, save_results_to_csv=True,
-#                                             results_filename='model_results.csv',
-#                                             results_dir="results/third_experimental_study/second_gman_to_use_w_xgb",
-#                                             experiment_filename=None,
-#                                             **kwargs):
-#     """
-#     Lightweight version of the GMAN model runner with automatic GPU memory release.
-#     Supports manual test sets via 'test_set' column and splits remaining data into train/val.
-#     Saves both the key metrics CSV file and the full predictions (Parquet) in the same directory.
-
-#     Args:
-#         val_ratio (float): Proportion of non-test data to use as validation.
-#         traffic_file (str): CSV file containing time series with 'test_set' column.
-#         ...
-#     Returns:
-#         dict: {'test_predictions': testPred, 'results': batch_results_df}
-#     """
-#     # Ensure the output directory exists
-#     os.makedirs(results_dir, exist_ok=True)
-
-#     # Analyze traffic file to compute ratios dynamically
-#     os.makedirs(results_dir, exist_ok=True)
-
-#     # Load DataFrame
-#     df = pd.read_csv(traffic_file) if traffic_file is not None else df_gman
-
-#     if 'test_set' not in df.columns:
-#         raise ValueError(
-#             "The input DataFrame must contain a 'test_set' column (boolean).")
-
-#     num_total = len(df)
-#     num_test = df['test_set'].sum()
-#     actual_test_ratio = num_test / num_total
-#     actual_train_ratio = train_ratio
-#     actual_val_ratio = 1.0 - actual_train_ratio - actual_test_ratio
-
-#     if actual_val_ratio < 0:
-#         raise ValueError(
-#             f"Invalid split: val_ratio < 0. Train ratio too high for test set size.")
-#     print(
-#         f"train_ratio: {actual_train_ratio}, val_ratio: {actual_val_ratio}, test_ratio: {actual_test_ratio}")
-#     # Define default arguments in a Namespace
-#     args = Namespace(
-#         time_slot=1,
-#         P=P,
-#         Q=Q,
-#         L=L,
-#         K=K,
-#         d=8,
-#         train_ratio=actual_train_ratio,
-#         val_ratio=actual_val_ratio,
-#         test_ratio=actual_test_ratio,  # still passed for logging/debug
-#         batch_size=batch_size,
-#         max_epoch=max_epoch,
-#         patience=patience,
-#         learning_rate=learning_rate,
-#         decay_epoch=5,
-#         df_gman=df_gman,
-#         traffic_file=traffic_file,
-#         SE_file=kwargs.get('SE_file', 'data/NDW/SE_new.txt'),
-#         model_file='results/GMAN(NDW)',
-#         log_file='results/log(NDW)',
-#         metrics_file='results/metrics.csv',
-#         filename=experiment_filename
-#     )
-
-#     for key, value in kwargs.items():
-#         if not hasattr(args, key):
-#             setattr(args, key, value)
-
-#     # Load data and reset TensorFlow graph
-#     trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY, SE, mean, std = utils.loadData_test_set_as_input_column(
-#         args, None)
-#     num_train, _, N = trainX.shape
-
-
-#     # Build the GMAN model
-#     X, TE, label, is_training, pred, loss, train_op, global_step = build_gman(
-#         args, SE, 24 * 60 // args.time_slot, N, None, num_train, mean, std
-#     )
-
-
-#     sess.run(tf.compat.v1.global_variables_initializer())
-#         best_epoch, start_train, end_train,start_val, end_val = train_gman(
-#             args, sess, X, TE, label, is_training, train_op, loss,
-#             trainX, trainTE, trainY, valX, valTE, valY, None
-#         )
-#         testPred, start_test, end_test, batch_results_df = test_gman_opt(
-#             args, sess, X, TE, is_training, pred, testX, testTE, testY, None
-#         )
-#         testPred = testPred.reshape(testY.shape)
-
-#         # Log evaluation metrics
-#         last_ae, last_rmse, last_mape, last_mape_values, last_smape, last_smape_values = log_metrics(
-#             log=None, trainPred=None, trainY=None, valPred=None, valY=None,
-#             testPred=testPred, testY=testY, args=args,
-#             start_test=start_test, end_test=end_test
-#         )
-#         print(f"Training/validation complete. Best epoch: {best_epoch}")
-
-#     # Save key metrics CSV file in the specified directory
-#     if save_results_to_csv:
-#         save_results(args, results_dir, results_filename, last_ae, last_rmse, last_mape, last_smape,
-#                      best_epoch, start_train, end_train, start_val, end_val, start_test, end_test, args.filename, last_mape_values, last_smape_values)
-
-#     # Save the full predictions as a Parquet file in the same directory
-#     parquet_filename = f"gman_results_P{args.P}_Q{args.Q}_max_epoch{args.max_epoch}_patience{args.patience}.parquet"
-#     parquet_file_path = os.path.join(results_dir, parquet_filename)
-#     batch_results_df.to_parquet(parquet_file_path)
-#     print(f"Predictions saved to {parquet_file_path}")
-
-#     return {'test_predictions': testPred, 'results': batch_results_df}
-
-def run_gman_light_test_set_as_input_column(
-    P=21, Q=15, learning_rate=0.001, L=3, K=8, max_epoch=1,
-    patience=5, batch_size=16,
-    traffic_file="data/NDW/ndw_three_weeks_gman.csv",
-    df_gman=None,
-    train_ratio=0.2,  # Only define val_ratio now; test set comes from 'test_set'
-    save_results_to_csv=True,
-    results_filename='model_results.csv',
-    results_dir="results/third_experimental_study/second_gman_to_use_w_xgb",
-    experiment_filename=None,
-    **kwargs
-):
+class DummyLog:
     """
-    TF2/Keras-compatible driver.
-    - Uses utils.loadData_test_set_as_input_column(...) for splits.
-    - Builds Keras model via build_gman(...)
-    - Trains with train_gman(...)
-    - Tests with test_gman_opt(...) and returns the same batch_results_df shape as old version
-    - Writes CSV + parquet like before
+    A dummy log object that does nothing.
+    Used when logging is disabled.
     """
-    import os, pandas as pd, numpy as np, tensorflow as tf
+
+    def write(self, _):
+        pass
+
+    def flush(self):
+        pass
+
+
+def run_gman_light(P=21, Q=15, learning_rate=0.001, L=3, K=8, max_epoch=1,
+                   patience=5, batch_size=16,
+                   traffic_file="data/NDW/ndw_three_weeks_gman.csv",
+                   train_ratio=0.34, val_ratio=0.33, test_ratio=0.33,
+                   enable_logging=False, save_results_to_csv=True,
+                   results_filename='model_results.csv',
+                   # New parameter to specify the directory for both outputs:
+                   results_dir="results/third_experimental_study/second_gman_to_use_w_xgb", experiment_filename=None,
+                   **kwargs):
+    """
+    Lightweight version of the GMAN model runner with automatic GPU memory release.
+    Saves both the key metrics CSV file and the full predictions (Parquet) in the same directory.
+
+    Args:
+        ... (other parameters remain the same)
+        results_dir (str): Directory where both CSV and Parquet files are saved.
+        results_filename (str): Filename for the CSV key metrics.
+        **kwargs: Additional keyword arguments to override defaults.
+
+    Returns:
+        dict: {'test_predictions': testPred, 'results': batch_results_df}
+    """
+    # Ensure the output directory exists
     os.makedirs(results_dir, exist_ok=True)
-    _enable_gpu_memory_growth()
 
-    # Load DataFrame if path given, else use provided df_gman
+    # Define default arguments in a Namespace
+    args = Namespace(
+        time_slot=1,
+        P=P,
+        Q=Q,
+        L=L,
+        K=K,
+        d=8,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+        test_ratio=test_ratio,
+        batch_size=batch_size,
+        max_epoch=max_epoch,
+        patience=patience,
+        learning_rate=learning_rate,
+        decay_epoch=5,
+        traffic_file=traffic_file,
+        SE_file=kwargs.get('SE_file', 'data/NDW/SE_new.txt'),
+        model_file='results/GMAN(NDW)',
+        log_file='results/log(NDW)',
+        metrics_file='results/metrics.csv',
+        filename=experiment_filename
+    )
+
+    for key, value in kwargs.items():
+        setattr(args, key, value)
+
+    # Load data and reset TensorFlow graph
+    trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY, SE, mean, std = load_data(
+        args, None)
+    num_train, _, N = trainX.shape
+    tf.compat.v1.reset_default_graph()
+
+    # Build the GMAN model
+    X, TE, label, is_training, pred, loss, train_op, global_step = build_gman(
+        args, SE, 24 * 60 // args.time_slot, N, None, num_train, mean, std
+    )
+
+    config = tf.compat.v1.ConfigProto()
+    config.gpu_options.allow_growth = True
+
+    with tf.compat.v1.Session(config=config) as sess:
+        sess.run(tf.compat.v1.global_variables_initializer())
+        best_epoch, start_train, end_train, end_val = train_gman(
+            args, sess, X, TE, label, is_training, train_op, loss,
+            trainX, trainTE, trainY, valX, valTE, valY, None
+        )
+        testPred, start_test, end_test, batch_results_df = test_gman_opt(
+            args, sess, X, TE, is_training, pred, testX, testTE, testY, None
+        )
+        testPred = testPred.reshape(testY.shape)
+
+        # Log evaluation metrics
+        last_ae, last_rmse, last_mape, last_mape_values, last_smape, last_smape_values = log_metrics(
+            log=None, trainPred=None, trainY=None, valPred=None, valY=None,
+            testPred=testPred, testY=testY, args=args,
+            start_test=start_test, end_test=end_test
+        )
+        print(f"Training/validation complete. Best epoch: {best_epoch}")
+
+    # Save key metrics CSV file in the specified directory
+    if save_results_to_csv:
+        save_results(args, results_dir, results_filename, last_ae, last_rmse, last_mape,
+                     best_epoch, start_train, end_train, end_val, start_test, end_test, args.filename, last_mape_values)
+
+    # Save the full predictions as a Parquet file in the same directory
+    parquet_filename = f"gman_results_P{args.P}_Q{args.Q}_max_epoch{args.max_epoch}_patience{args.patience}.parquet"
+    parquet_file_path = os.path.join(results_dir, parquet_filename)
+    batch_results_df.to_parquet(parquet_file_path)
+    print(f"Predictions saved to {parquet_file_path}")
+
+    return {'test_predictions': testPred, 'results': batch_results_df}
+
+
+def run_gman_light_test_set_as_input_column(P=21, Q=15, learning_rate=0.001, L=3, K=8, max_epoch=1,
+                                            patience=5, batch_size=16,
+                                            traffic_file="data/NDW/ndw_three_weeks_gman.csv",
+                                            df_gman=None,
+                                            train_ratio=0.2,  # Only define val_ratio now
+                                            enable_logging=False, save_results_to_csv=True,
+                                            results_filename='model_results.csv',
+                                            results_dir="results/third_experimental_study/second_gman_to_use_w_xgb",
+                                            experiment_filename=None,
+                                            **kwargs):
+    """
+    Lightweight version of the GMAN model runner with automatic GPU memory release.
+    Supports manual test sets via 'test_set' column and splits remaining data into train/val.
+    Saves both the key metrics CSV file and the full predictions (Parquet) in the same directory.
+
+    Args:
+        val_ratio (float): Proportion of non-test data to use as validation.
+        traffic_file (str): CSV file containing time series with 'test_set' column.
+        ...
+    Returns:
+        dict: {'test_predictions': testPred, 'results': batch_results_df}
+    """
+    # Ensure the output directory exists
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Analyze traffic file to compute ratios dynamically
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Load DataFrame
     df = pd.read_csv(traffic_file) if traffic_file is not None else df_gman
+
     if 'test_set' not in df.columns:
-        raise ValueError("The input DataFrame must contain a 'test_set' column (boolean).")
+        raise ValueError(
+            "The input DataFrame must contain a 'test_set' column (boolean).")
 
     num_total = len(df)
     num_test = df['test_set'].sum()
-    actual_test_ratio  = num_test / num_total
+    actual_test_ratio = num_test / num_total
     actual_train_ratio = train_ratio
-    actual_val_ratio   = 1.0 - actual_train_ratio - actual_test_ratio
-    if actual_val_ratio < 0:
-        raise ValueError("Invalid split: val_ratio < 0. Train ratio too high for test set size.")
+    actual_val_ratio = 1.0 - actual_train_ratio - actual_test_ratio
 
-    # Build arg namespace (keeps downstream utils untouched)
+    if actual_val_ratio < 0:
+        raise ValueError(
+            f"Invalid split: val_ratio < 0. Train ratio too high for test set size.")
+    print(
+        f"train_ratio: {actual_train_ratio}, val_ratio: {actual_val_ratio}, test_ratio: {actual_test_ratio}")
+    # Define default arguments in a Namespace
     args = Namespace(
         time_slot=1,
-        P=P, Q=Q,
-        L=L, K=K, d=8,
+        P=P,
+        Q=Q,
+        L=L,
+        K=K,
+        d=8,
         train_ratio=actual_train_ratio,
         val_ratio=actual_val_ratio,
-        test_ratio=actual_test_ratio,
+        test_ratio=actual_test_ratio,  # still passed for logging/debug
         batch_size=batch_size,
         max_epoch=max_epoch,
         patience=patience,
@@ -912,59 +946,61 @@ def run_gman_light_test_set_as_input_column(
         df_gman=df_gman,
         traffic_file=traffic_file,
         SE_file=kwargs.get('SE_file', 'data/NDW/SE_new.txt'),
-        model_file=os.path.join(results_dir, 'GMAN(NDW)'),
-        log_file=os.path.join(results_dir, 'log(NDW)'),
-        metrics_file=os.path.join(results_dir, 'metrics.csv'),
-        filename=experiment_filename,
-        log_dir=results_dir,
+        model_file='results/GMAN(NDW)',
+        log_file='results/log(NDW)',
+        metrics_file='results/metrics.csv',
+        filename=experiment_filename
     )
+
     for key, value in kwargs.items():
         if not hasattr(args, key):
             setattr(args, key, value)
 
-    # Load arrays + scalers
+    # Load data and reset TensorFlow graph
     trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY, SE, mean, std = utils.loadData_test_set_as_input_column(
-        args, None
-    )
+        args, None)
     num_train, _, N = trainX.shape
+    tf.compat.v1.reset_default_graph()
 
-    # Build compiled Keras model
-    net = build_gman(args, SE, 24 * 60 // args.time_slot, N, None, num_train, mean, std)
-
-    # Train (captures start_val/end_val for CSV)
-    best_epoch, start_train, end_train, start_val, end_val = train_gman(
-        args, net, trainX, trainTE, trainY, valX, valTE, valY, log=None
+    # Build the GMAN model
+    X, TE, label, is_training, pred, loss, train_op, global_step = build_gman(
+        args, SE, 24 * 60 // args.time_slot, N, None, num_train, mean, std
     )
 
-    # Test (also returns batch_results_df)
-    testPred, start_test, end_test, batch_results_df = test_gman_opt(
-        args, net, testX, testTE, testY, log=None
-    )
+    config = tf.compat.v1.ConfigProto()
+    config.gpu_options.allow_growth = True
 
-    # Compute + log metrics (unchanged)
-    last_ae, last_rmse, last_mape, last_mape_values, last_smape, last_smape_values = log_metrics(
-        log=None, trainPred=None, trainY=None, valPred=None, valY=None,
-        testPred=testPred, testY=testY, args=args,
-        start_test=start_test, end_test=end_test
-    )
-    print(f"Training/validation complete. Best epoch: {best_epoch}")
-
-    # Save metrics CSV
-    if save_results_to_csv:
-        save_results(
-            args, results_dir, results_filename,
-            last_ae, last_rmse, last_mape, last_smape,
-            best_epoch, start_train, end_train, start_val, end_val, start_test, end_test,
-            args.filename, last_mape_values, last_smape_values
+    with tf.compat.v1.Session(config=config) as sess:
+        sess.run(tf.compat.v1.global_variables_initializer())
+        best_epoch, start_train, end_train,start_val, end_val = train_gman(
+            args, sess, X, TE, label, is_training, train_op, loss,
+            trainX, trainTE, trainY, valX, valTE, valY, None
         )
+        testPred, start_test, end_test, batch_results_df = test_gman_opt(
+            args, sess, X, TE, is_training, pred, testX, testTE, testY, None
+        )
+        testPred = testPred.reshape(testY.shape)
 
-    # Save full predictions parquet (same name pattern)
+        # Log evaluation metrics
+        last_ae, last_rmse, last_mape, last_mape_values, last_smape, last_smape_values = log_metrics(
+            log=None, trainPred=None, trainY=None, valPred=None, valY=None,
+            testPred=testPred, testY=testY, args=args,
+            start_test=start_test, end_test=end_test
+        )
+        print(f"Training/validation complete. Best epoch: {best_epoch}")
+
+    # Save key metrics CSV file in the specified directory
+    if save_results_to_csv:
+        save_results(args, results_dir, results_filename, last_ae, last_rmse, last_mape, last_smape,
+                     best_epoch, start_train, end_train, start_val, end_val, start_test, end_test, args.filename, last_mape_values, last_smape_values)
+
+    # Save the full predictions as a Parquet file in the same directory
     parquet_filename = f"gman_results_P{args.P}_Q{args.Q}_max_epoch{args.max_epoch}_patience{args.patience}.parquet"
     parquet_file_path = os.path.join(results_dir, parquet_filename)
     batch_results_df.to_parquet(parquet_file_path)
     print(f"Predictions saved to {parquet_file_path}")
 
-    return {"test_predictions": testPred, "results": batch_results_df}
+    return {'test_predictions': testPred, 'results': batch_results_df}
 
 
 def print_date_differences(tfd, df_gman_test):
@@ -1059,6 +1095,83 @@ def modify_gman(df_gman_test):
     return df_long
 
 
+def modify_gman_deprecated(df_gman_test):
+    """
+    Modify the GMAN results DataFrame for further analysis.
+    Assumes 1min intervals between timestamps (dt)
+
+    Args:
+        df_gman_test (DataFrame): Original GMAN test results DataFrame.
+
+    Returns:
+        DataFrame: Modified DataFrame in long format with columns for timestamp,
+                   sensor_id, and gman_prediction.
+    """
+    if 'timestamp' in df_gman_test.columns:
+        date_col = 'timestamp'
+    elif 'date' in df_gman_test.columns:
+        date_col = 'date'
+    else:
+        raise ValueError(
+            "No 'timestamp' or 'date' column found in the DataFrame.")
+
+    # Convert 'date' column to datetime if it's not already
+    df_gman_test[date_col] = pd.to_datetime(df_gman_test[date_col])
+
+    # Calculate automatically the prediction horizon
+    df_gman_test_sample = df_gman_test.loc[df_gman_test['sample_nr'] == 1]
+    # Add 1 minute to include the last timestep (otherwise the difference would be for example 14 (if horizon is 15min))
+    horizon = df_gman_test_sample[date_col].max(
+    ) - df_gman_test_sample[date_col].min() + pd.Timedelta(minutes=1)
+    max_timestep = df_gman_test['timestep'].max()
+    # dt = df_gman_test['timestamp'].iloc[1] - df_gman_test['timestamp'].iloc[0]
+    df_gman_test = df_gman_test[df_gman_test['timestep']
+                                == max_timestep]
+
+    # Select only the timestamp and sensor prediction columns (ending with '_pred')
+    sensor_cols = [
+        col for col in df_gman_test.columns if col.endswith('_pred')]
+    cols_to_use = [date_col] + sensor_cols
+    df_gman_test = df_gman_test[cols_to_use]
+
+    # Rename columns: remove '_pred' suffix from sensor names
+    # remove the last 5 characters ('_pred')
+    new_sensor_cols = [col[:-5] for col in sensor_cols]
+    df_gman_test.columns = [date_col] + new_sensor_cols
+
+    # Reshape the DataFrame from wide to long format
+    df_gman_test_long = df_gman_test.melt(
+        id_vars=date_col,
+        var_name='sensor_id',
+        value_name='gman_prediction'
+    )
+    df_gman_test_long.rename(
+        columns={date_col: 'target_date'}, inplace=True)
+    df_gman_test_long['target_date'] = pd.to_datetime(
+        df_gman_test_long['target_date'])
+    df_gman_test_long['prediction_date'] = df_gman_test_long['target_date'] - horizon
+
+    return df_gman_test_long
+
+
+# def load_gman_results(p, q, directory="saved_gman_results"):
+#     """
+#     Load previously saved GMAN results from a Parquet file.
+
+#     Args:
+#         p (int): Parameter P.
+#         q (int): Parameter Q.
+#         directory (str): Directory where results are stored.
+
+#     Returns:
+#         DataFrame or None: Loaded results DataFrame, or None if file not found.
+#     """
+#     file_path = os.path.join(directory, f"gman_results_P{p}_Q{q}.parquet")
+#     if os.path.exists(file_path):
+#         return pd.read_parquet(file_path)
+#     else:
+#         print(f"File not found: {file_path}")
+#         return None
 
 
 def load_gman_results(p, q, directory="saved_gman_results"):

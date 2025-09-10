@@ -328,3 +328,11 @@ def mae_loss(pred, label):
     loss = tf.reduce_mean(loss)  # Only averages the last timestep's loss
 
     return loss
+
+
+def last_step_masked_mae_keras(y_true, y_pred):
+    """
+    Wrap your existing mae_loss(pred, label) into a Keras loss signature.
+    Your mae_loss computes MAE only on the last predicted step and masks zeros.
+    """
+    return mae_loss(pred=y_pred, label=y_true)
