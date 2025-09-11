@@ -192,6 +192,29 @@ def build_gman_old(args, SE, T, N, log, num_train, mean, std):
     return X, TE, label, is_training, pred, loss, train_op, global_step
 
 
+class ClippedExpDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, initial_lr, decay_steps, decay_rate, staircase=True, min_lr=1e-5):
+        self._base = tf.keras.optimizers.schedules.ExponentialDecay(
+            initial_learning_rate=initial_lr,
+            decay_steps=decay_steps,
+            decay_rate=decay_rate,
+            staircase=staircase,
+        )
+        self._min_lr = tf.constant(min_lr, dtype=tf.float32)
+
+    def __call__(self, step):
+        return tf.maximum(self._base(step), self._min_lr)
+
+    def get_config(self):
+        # Optional: makes it serializable if you ever save/restore via config
+        return {
+            "initial_lr": self._base.initial_learning_rate,
+            "decay_steps": self._base.decay_steps,
+            "decay_rate": self._base.decay_rate,
+            "staircase": self._base.staircase,
+            "min_lr": float(self._min_lr.numpy()),
+        }
+
 def build_gman(args, SE, T, N, log, num_train, mean, std):
     """
     Build the GMAN model.
@@ -231,11 +254,12 @@ def build_gman(args, SE, T, N, log, num_train, mean, std):
 
     # --- LR schedule & compile ---
     steps_per_epoch = max(1, num_train // max(1, args.batch_size))
-    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=args.learning_rate,
+    lr_schedule = ClippedExpDecay(
+        initial_lr=args.learning_rate,
         decay_steps=args.decay_epoch * steps_per_epoch,
         decay_rate=0.7,
         staircase=True,
+        min_lr=1e-5,
     )
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule,
                                          epsilon=1e-8,         # <-- match TF1 default
@@ -391,6 +415,7 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
     
     
     callbacks = [
+        bn_sched,
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss", patience=args.patience, restore_best_weights=True
         ),
@@ -398,9 +423,8 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
             filepath=os.path.join(args.log_dir or ".", "gman_best.keras"),
             monitor="val_loss", save_best_only=True
         ),
+        _ValTimerCallback()
     ]
-    val_timer = _ValTimerCallback()
-    callbacks.append(val_timer)
 
     start_train = time.time()
     hist = net.fit(
@@ -409,10 +433,11 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
         epochs=args.max_epoch, batch_size=args.batch_size,
         callbacks=callbacks, verbose=1, shuffle=True,
     )
-    # Derive timings
-    start_val = val_timer.last_val_start if val_timer.last_val_start is not None else time.time()
-    end_val   = val_timer.last_val_end   if val_timer.last_val_end   is not None else start_val
-    end_train = start_val  # training part ends where last validation begins
+    # extract timing from the ValTimer that was in callbacks
+    val_timer = next((cb for cb in callbacks if isinstance(cb, _ValTimerCallback)), None)
+    start_val = val_timer.last_val_start if val_timer and val_timer.last_val_start is not None else time.time()
+    end_val   = val_timer.last_val_end   if val_timer and val_timer.last_val_end   is not None else start_val
+    end_train = start_val
 
     # Best epoch (1-based)
     best_epoch = int(np.argmin(hist.history["val_loss"])) + 1
@@ -421,39 +446,6 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
         from .GMAN import utils
         utils.log_string(log, f"Training complete. Best epoch: {best_epoch}")
     return best_epoch, start_train, end_train, start_val, end_val
-
-
-def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
-    """
-    TF2 training: returns (best_epoch, start_train, end_train, end_val)
-    to keep your downstream timing/CSV logic unchanged.
-    """
-    import time
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(
-            monitor="val_loss", patience=args.patience, restore_best_weights=True
-        ),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(args.log_dir or ".", "gman_best.keras"),
-            monitor="val_loss", save_best_only=True
-        ),
-    ]
-    start_train = time.time()
-    hist = net.fit(
-        x=[trainX, trainTE], y=trainY,
-        validation_data=([valX, valTE], valY),
-        epochs=args.max_epoch, batch_size=args.batch_size,
-        callbacks=callbacks, verbose=1,
-        shuffle=True,
-    )
-    end_val = time.time()
-    # infer best_epoch
-    best_epoch = int(np.argmin(hist.history["val_loss"])) + 1
-    end_train = end_val  # keep your original tuple shape semantic
-    if log is not None:
-        from .GMAN import utils
-        utils.log_string(log, f"Training/validation complete. Best epoch: {best_epoch}")
-    return best_epoch, start_train, end_train, end_val
 
 
 
@@ -907,6 +899,24 @@ def save_results(args, results_dir, results_filename, AE, RMSE, MAPE, SMAPE,
 
 #     return {'test_predictions': testPred, 'results': batch_results_df}
 
+def _sanitize_gman_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Idempotent: keep DatetimeIndex, numeric sensors, and 'test_set' bool."""
+    df = df.copy()
+    # Promote datetime column to index if needed
+    if not isinstance(df.index, pd.DatetimeIndex):
+        for col in ("timestamp", "date", "datetime"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col])
+                df = df.set_index(col)
+                break
+    if 'test_set' not in df.columns:
+        raise ValueError("Expected 'test_set' column in df.")
+    if df['test_set'].dtype != bool:
+        df['test_set'] = df['test_set'].astype(bool)
+    keep = ['test_set'] + [c for c in df.columns if c != 'test_set' and pd.api.types.is_numeric_dtype(df[c])]
+    return df[keep]
+
+
 def run_gman_light_test_set_as_input_column(
     P=21, Q=15, learning_rate=0.001, L=3, K=8, max_epoch=1,
     patience=5, batch_size=16,
@@ -935,7 +945,9 @@ def run_gman_light_test_set_as_input_column(
     df = pd.read_csv(traffic_file) if traffic_file is not None else df_gman
     if 'test_set' not in df.columns:
         raise ValueError("The input DataFrame must contain a 'test_set' column (boolean).")
-
+    
+    df = _sanitize_gman_df(df)
+    args.df_gman = df
     num_total = len(df)
     num_test = df['test_set'].sum()
     actual_test_ratio  = num_test / num_total

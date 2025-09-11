@@ -328,6 +328,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         diagnose_extreme_changes: bool = False,
         add_gman_predictions: bool = False,
         convert_gman_prediction_to_delta_speed: bool = True,
+        datetime_as_index : bool = True
     ) -> pd.DataFrame:
         
         df = self.get_data(window_size=window_size,
@@ -356,7 +357,10 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
             .set_index(self.datetime_col)
         )
 
-        out = values_wide.join(test_per_date).reset_index()
+        if datetime_as_index:
+            out = values_wide.join(test_per_date)
+        else:
+            out = values_wide.join(test_per_date).reset_index()
         out.columns.name = None
 
         # ensure 'test_set' is the last column

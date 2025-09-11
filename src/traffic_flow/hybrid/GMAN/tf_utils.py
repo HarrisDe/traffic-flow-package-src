@@ -75,28 +75,34 @@ def conv2d(x, output_dims, kernel_size, stride=[1, 1],
            padding='SAME', use_bias=True, activation=tf.nn.relu,
            bn=False, bn_decay=None, is_training=None):
     """
-    Keras-friendly conv2d that returns a tensor but uses Keras layers underneath.
-    Keeps the old signature so callers (model.FC etc.) remain unchanged.
+    TF2/Keras conv2d that mirrors the old TF1 helper:
+    - same signature (callers unchanged)
+    - Keras layers underneath
+    - ignores `is_training` (Keras handles train/infer automatically)
     """
-    # Keras Conv2D wants strides as tuple and padding in {'same','valid'}
-    strides = tuple(stride)
-    pad = 'same' if padding.upper() == 'SAME' else 'valid'
+    # sanitize shapes & padding
+    ks = tuple(kernel_size) if isinstance(kernel_size, (list, tuple)) else (kernel_size, kernel_size)
+    st = tuple(stride) if isinstance(stride, (list, tuple)) else (stride, stride)
+    pad = 'same' if str(padding).upper() == 'SAME' else 'valid'
+
+    # if BN follows, bias is typically redundant
+    use_bias_eff = use_bias and not bn
 
     y = tf.keras.layers.Conv2D(
         filters=output_dims,
-        kernel_size=tuple(kernel_size),
-        strides=strides,
+        kernel_size=ks,
+        strides=st,
         padding=pad,
-        use_bias=use_bias,
+        use_bias=use_bias_eff,
         activation=None,
         kernel_initializer='glorot_uniform',
     )(x)
 
     if bn:
-        # bn_decay in your code is an EMA factor; Keras uses "momentum" for moving average of mean/var
-        # momentum ~ bn_decay is acceptable mapping
-        momentum = 0.99 if bn_decay is None else float(bn_decay)
-        y = tf.keras.layers.BatchNormalization(momentum=momentum, epsilon=1e-3)(y)
+        # Map TF1 bn_decay (~moving avg "decay") to Keras BatchNorm "momentum"
+        # Clamp to a safe range; BNMomentumScheduler will update this during training.
+        mom = 0.99 if bn_decay is None else float(max(0.0, min(0.999, bn_decay)))
+        y = tf.keras.layers.BatchNormalization(momentum=mom, epsilon=1e-3)(y)
 
     if activation is not None:
         y = tf.keras.layers.Activation(activation)(y)
