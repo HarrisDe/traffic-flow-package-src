@@ -1,4 +1,4 @@
-import tf_utils
+from . import tf_utils
 import tensorflow as tf
 
 

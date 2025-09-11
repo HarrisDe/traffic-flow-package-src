@@ -14,24 +14,72 @@ import sys
 import random
 random.seed(69); np.random.seed(69); tf.random.set_seed(69)
 
+from .GMAN import utils as utils
+from .GMAN import model as model
 
-# gman_path = os.path.abspath("src/GMAN")
-repo_root = os.path.abspath(os.path.join(os.getcwd(), ".."))
-if repo_root not in sys.path:
-    sys.path.insert(0, repo_root)
-    print(f"repo_root: {repo_root}")
-gman_path = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), '..', 'src', 'GMAN'))
-sys.path.append(gman_path)
-gman_path = os.path.abspath("src/GMAN")
-sys.path.append(gman_path)
-print(f'working directory: {os.getcwd()}')
-print(f"gman_path: {gman_path}")
 
-# Print the current working directory to verify module search paths
-print("Current working directory:", os.getcwd())
-import utils
-import model
+def set_random_seed(seed: int = 42, use_gpu: bool = True, deterministic: bool = True) -> int:
+    """
+    Set seeds for Python, NumPy, and TensorFlow (TF 2.x).
+
+    Args:
+        seed (int): Seed to use across libs.
+        use_gpu (bool): If False, disable GPUs for this process.
+        deterministic (bool): If True, request deterministic kernels where possible.
+
+    Returns:
+        int: The seed that was set.
+
+    Notes:
+    - Call this *before* building models/datasets.
+    - Full determinism depends on your ops/versions; some GPU ops remain nondeterministic.
+    """
+    import os, random
+    import numpy as np
+    import tensorflow as tf
+
+    # 1) Python & NumPy
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # 2) TensorFlow seed (prefer the unified helper when available)
+    try:
+        tf.keras.utils.set_random_seed(seed)  # seeds Python, NumPy, and TF
+    except Exception:
+        tf.random.set_seed(seed)
+
+    # 3) Determinism knobs (best-effort)
+    if deterministic:
+        os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")
+        os.environ.setdefault("TF_CUDNN_DETERMINISTIC", "1")
+        try:
+            # Available in TF ≥ 2.9
+            tf.config.experimental.enable_op_determinism(True)
+        except Exception:
+            pass
+
+    # 4) GPU selection / memory behavior
+    if not use_gpu:
+        # Must be set *before* TF initializes the runtime; still try to hide GPUs at runtime too.
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+        try:
+            tf.config.set_visible_devices([], "GPU")
+        except Exception:
+            pass
+        print("GPU disabled for reproducibility (CUDA_VISIBLE_DEVICES = -1).")
+    else:
+        # Enable memory growth to reduce OOM flakiness (keeps determinism reasonable).
+        try:
+            gpus = tf.config.list_physical_devices("GPU")
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            if gpus:
+                print(f"GPU enabled ({len(gpus)} found). Note: some ops may still be non-deterministic.")
+        except Exception:
+            pass
+
+    return seed
 
 
 # --- TF2 niceties ---

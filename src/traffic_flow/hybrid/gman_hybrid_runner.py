@@ -128,7 +128,7 @@ class GMANHybridExperiment:
         # Lazy imports to keep this file standalone & testable
         if train_fn is None:
             try:
-                from code_for_experiments.experimental_studies_functions import (
+                from traffic_flow.hybrid.experimental_studies_functions import (
                     run_gman_light_test_set_as_input_column as _default_train_fn,
                 )
                 self.train_fn = _default_train_fn
@@ -142,7 +142,7 @@ class GMANHybridExperiment:
 
         if loader_cls is None:
             try:
-                from traffic_flow_package_src import InitialTrafficDataLoader as _Loader
+                from traffic_flow.data_loading.data_loader_orchestrator import InitialTrafficDataLoader as _Loader
                 self.loader_cls = _Loader
             except Exception as e:
                 raise ImportError(
