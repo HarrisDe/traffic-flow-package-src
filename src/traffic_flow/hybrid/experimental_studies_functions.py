@@ -201,7 +201,6 @@ class ClippedExpDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
             staircase=staircase,
         )
         self._min_lr = tf.constant(min_lr, dtype=tf.float32)
-
     def __call__(self, step):
         return tf.maximum(self._base(step), self._min_lr)
 
@@ -415,7 +414,6 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
     
     
     callbacks = [
-        bn_sched,
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss", patience=args.patience, restore_best_weights=True
         ),
@@ -423,6 +421,7 @@ def train_gman(args, net, trainX, trainTE, trainY, valX, valTE, valY, log):
             filepath=os.path.join(args.log_dir or ".", "gman_best.keras"),
             monitor="val_loss", save_best_only=True
         ),
+        bn_sched,
         _ValTimerCallback()
     ]
 
@@ -730,12 +729,13 @@ def save_results(args, results_dir, results_filename, AE, RMSE, MAPE, SMAPE,
 
     # Define consistent column order
     columns = [
-        'filename', 'train_ratio', 'smooth_speeds', 'filter_on_train_only', 'window_size',
-        'P', 'Q',
-        'MAE', 'MedianAE', 'RMSE', 'MAPE', 'SMAPE',
-        'MAE_std', 'MedianAE_std', 'RMSE_std', 'MAPE_std','SMAPE_std',
-        'learning_rate', 'total_training_time', 'validation_time_last_epoch_only',
-        'inference_time', 'L', 'K', 'best_epoch', 'test_start', 'test_end']
+    'filename','train_ratio','smooth_speeds','filter_on_train_only','window_size',
+    'P','Q',
+    'MAE','MedianAE','RMSE','MAPE','SMAPE',
+    'MAE_std','MedianAE_std','RMSE_std','MAPE_std','SMAPE_std',
+    'learning_rate','total_training_time_all_epochs','validation_time_last_epoch_only',
+    'inference_time','L','K','best_epoch','test_start','test_end'
+]
 
     # Create the CSV file if it doesn't exist yet
     if not os.path.exists(results_file):
@@ -947,7 +947,6 @@ def run_gman_light_test_set_as_input_column(
         raise ValueError("The input DataFrame must contain a 'test_set' column (boolean).")
     
     df = _sanitize_gman_df(df)
-    args.df_gman = df
     num_total = len(df)
     num_test = df['test_set'].sum()
     actual_test_ratio  = num_test / num_total
@@ -969,7 +968,7 @@ def run_gman_light_test_set_as_input_column(
         patience=patience,
         learning_rate=learning_rate,
         decay_epoch=5,
-        df_gman=df_gman,
+        df_gman=df,
         traffic_file=traffic_file,
         SE_file=kwargs.get('SE_file', 'data/NDW/SE_new.txt'),
         model_file=os.path.join(results_dir, 'GMAN(NDW)'),

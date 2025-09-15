@@ -101,91 +101,93 @@ def seq2instance(data, P, Q):
 
 def loadData(args, output_timestamps=False):
     # Traffic
-    # df = pd.read_hdf(args.traffic_file)
-    df = pd.read_csv(args.traffic_file, header=0,
-                     index_col=0)
+    df = pd.read_csv(args.traffic_file, header=0, index_col=0)
     df.index = pd.to_datetime(df.index)
 
     Traffic = df.values
-    # train/val/test
-    # Temporal Embedding
 
-    num_step = df.shape[0]
+    # splits
+    num_step   = df.shape[0]
     train_steps = round(args.train_ratio * num_step)
-    test_steps = round(args.test_ratio * num_step)
-    val_steps = num_step - train_steps - test_steps
+    test_steps  = round(args.test_ratio  * num_step)
+    val_steps   = num_step - train_steps - test_steps
+
     train = Traffic[: train_steps]
-    val = Traffic[train_steps: train_steps + val_steps]
-    test = Traffic[-test_steps:]
+    val   = Traffic[train_steps: train_steps + val_steps]
+    test  = Traffic[-test_steps:]
+
     # X, Y
     trainX, trainY = seq2instance(train, args.P, args.Q)
-    valX, valY = seq2instance(val, args.P, args.Q)
-    testX, testY = seq2instance(test, args.P, args.Q)
-    # normalization
+    valX,   valY   = seq2instance(val,   args.P, args.Q)
+    testX,  testY  = seq2instance(test,  args.P, args.Q)
+
+    # normalization (fit on train only)
     mean, std = np.mean(trainX), np.std(trainX)
     trainX = (trainX - mean) / std
-    valX = (valX - mean) / std
-    testX = (testX - mean) / std
+    valX   = (valX   - mean) / std
+    testX  = (testX  - mean) / std
 
+    # --- timestamps for testY (for downstream reporting) ---
     test_time = df.index.to_numpy(dtype="datetime64[ms]").reshape(-1, 1)
     test_time = test_time[-test_steps:]
-    # test_time = test_time[-test_steps +args.P + 1:]
-    print(f"Time shape: {test_time.shape}")
-    # Apply seq2instance to timestamps in the same way as testY
-    _, timestamps_testY = seq2instance(
-        test_time, args.P, args.Q)  # Extract timestamps
-
-    # Convert timestamps to NumPy datetime format
+    _, timestamps_testY = seq2instance(test_time, args.P, args.Q)
     timestamps_testY = timestamps_testY.astype("datetime64[ms]")
+    if output_timestamps:
+        return timestamps_testY
 
-    # Fix format: Convert to Pandas-style datetime string ('YYYY-MM-DD HH:MM:SS')
-    # timestamps_testY = pd.Series(timestamps_testY).dt.strftime(
-    #     '%Y-%m-%d %H:%M:%S').to_numpy()
-
-    # spatial embedding
-    f = open(args.SE_file, mode='r')
-
-    lines = f.readlines()
+    # --- spatial embedding ---
+    with open(args.SE_file, "r") as f:
+        lines = f.readlines()
     temp = lines[0].split(' ')
     N, dims = int(temp[0]), int(temp[1])
-    SE = np.zeros(shape=(N, dims), dtype=np.float32)
+    SE = np.zeros((N, dims), dtype=np.float32)
     for line in lines[1:]:
         temp = line.split(' ')
         index = int(temp[0])
         SE[index] = temp[1:]
 
-    # temporal embedding
+    # --- temporal embedding (DAYOFWEEK, TIMEOFDAY) ---
+    # time_slot in minutes; default to 1 if not provided
+    time_slot = int(getattr(args, "time_slot", 1))
+    T = 24 * 60 // max(1, time_slot)
+
     Time = df.index
-    dayofweek = np.reshape(Time.weekday, newshape=(-1, 1))
-    # timeofday = (Time.hour * 3600 + Time.minute * 60 + Time.second) \
-    #            // Time.freq.delta.total_seconds()
-    timeofday = (Time.hour * 3600 + Time.minute * 60 + Time.second) \
-        // (60 * 5)
-    timeofday = np.reshape(timeofday, newshape=(-1, 1))
-    Time = np.concatenate((dayofweek, timeofday), axis=-1)
-    # train/val/test
-    train = Time[: train_steps]
-    val = Time[train_steps: train_steps + val_steps]
-    test = Time[-test_steps:]
-    # shape = (num_sample, P + Q, 2)
-    trainTE = seq2instance(train, args.P, args.Q)
-    trainTE = np.concatenate(trainTE, axis=1).astype(np.int32)
-    valTE = seq2instance(val, args.P, args.Q)
+    dayofweek = np.reshape(Time.weekday, newshape=(-1, 1))  # 0..6
+
+    # Minutes-of-day binned by time_slot
+    # (equivalent to floor((h*60 + m) / time_slot))
+    mod = (Time.hour * 60 + Time.minute) // time_slot
+    # Ensure range 0..T-1 in case of off-by-one/frequency quirks
+    timeofday = (mod % T).astype(np.int64).reshape(-1, 1)
+
+    # Combine -> shape [num_step, 2]
+    Time_enc = np.concatenate((dayofweek, timeofday), axis=-1)
+
+    # Split TE same as data
+    trainTE = seq2instance(Time_enc[: train_steps], args.P, args.Q)
+    trainTE = np.concatenate(trainTE, axis=1).astype(np.int32)  # (num_train, P+Q, 2)
+
+    valTE = seq2instance(Time_enc[train_steps: train_steps + val_steps], args.P, args.Q)
     valTE = np.concatenate(valTE, axis=1).astype(np.int32)
-    testTE = seq2instance(test, args.P, args.Q)
+
+    testTE = seq2instance(Time_enc[-test_steps:], args.P, args.Q)
     testTE = np.concatenate(testTE, axis=1).astype(np.int32)
 
-    if output_timestamps:
-        return timestamps_testY
+    # Safety checks (helps catch mismatches with STEmbedding one-hot depth)
+    assert trainTE[...,0].min() >= 0 and trainTE[...,0].max() <= 6
+    assert valTE[...,0].min()   >= 0 and valTE[...,0].max()   <= 6
+    assert testTE[...,0].min()  >= 0 and testTE[...,0].max()  <= 6
+    assert trainTE[...,1].min() >= 0 and trainTE[...,1].max() <  T
+    assert valTE[...,1].min()   >= 0 and valTE[...,1].max()   <  T
+    assert testTE[...,1].min()  >= 0 and testTE[...,1].max()  <  T
 
-    return (trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY,
-            SE, mean, std)
+    return (trainX, trainTE, trainY, valX, valTE, valY,
+            testX,  testTE,  testY,  SE,  mean,  std)
 
 
 # Modified
 def loadData_test_set_as_input_column(args, output_timestamps=False):
     # Load CSV and parse datetime index
-
     if args.traffic_file is None:
         df = args.df_gman
     else:
@@ -202,34 +204,30 @@ def loadData_test_set_as_input_column(args, output_timestamps=False):
     # Split remaining data into train/val using ratios
     Traffic_test = df_test.values
     Traffic_rest = df_rest.values
-    # num_step = Traffic_rest.shape[0]
-    num_step = df.shape[0]
+    num_step = df.shape[0]  # keep your current choice
     train_steps = round(args.train_ratio * num_step)
-    # val_steps = num_step - train_steps
     train = Traffic_rest[:train_steps]
-    val = Traffic_rest[train_steps:]
+    val   = Traffic_rest[train_steps:]
     val_steps = val.shape[0]
-    print(
-        f'Calculated train ratio: {round(train_steps/num_step,2)}, calculated validation ratio: {round(val_steps/num_step,2)},')
+    print(f'Calculated train ratio: {round(train_steps/num_step,2)}, calculated validation ratio: {round(val_steps/num_step,2)},')
 
     # X, Y
     trainX, trainY = seq2instance(train, args.P, args.Q)
-    valX, valY = seq2instance(val, args.P, args.Q)
-    testX, testY = seq2instance(Traffic_test, args.P, args.Q)
+    valX,   valY   = seq2instance(val,   args.P, args.Q)
+    testX,  testY  = seq2instance(Traffic_test, args.P, args.Q)
 
     # normalization
     mean, std = np.mean(trainX), np.std(trainX)
     trainX = (trainX - mean) / std
-    valX = (valX - mean) / std
-    testX = (testX - mean) / std
+    valX   = (valX   - mean) / std
+    testX  = (testX  - mean) / std
 
-    # Test timestamps
-    test_time = df_test.index.to_numpy(dtype="datetime64[ms]").reshape(-1, 1)
-    _, timestamps_testY = seq2instance(test_time, args.P, args.Q)
+    # Test timestamps (for logging/optional return)
+    test_time_idx = df_test.index.to_numpy(dtype="datetime64[ms]").reshape(-1, 1)
+    _, timestamps_testY = seq2instance(test_time_idx, args.P, args.Q)
     timestamps_testY = timestamps_testY.astype("datetime64[ms]")
-    print(f"Time shape: {test_time.shape}")
-    print(
-        f"first test timestamp (from timestamps_testY): {timestamps_testY[0]}")
+    print(f"Time shape: {test_time_idx.shape}")
+    print(f"first test timestamp (from timestamps_testY): {timestamps_testY[0]}")
     print(f"first test timestamp (from df): {df_test.index[0]}")
     print(f"first val timestamp (from df): {df_rest.index[train_steps]}")
 
@@ -244,30 +242,45 @@ def loadData_test_set_as_input_column(args, output_timestamps=False):
         index = int(temp[0])
         SE[index] = list(map(float, temp[1:]))
 
-    # Temporal embedding
-    def generate_time_features(time_index):
-        dayofweek = np.reshape(time_index.weekday, newshape=(-1, 1))
-        timeofday = (time_index.hour * 3600 + time_index.minute *
-                     60 + time_index.second) // (60 * 5)
-        timeofday = np.reshape(timeofday, newshape=(-1, 1))
-        return np.concatenate((dayofweek, timeofday), axis=-1)
+    # -------- Temporal embedding (UPDATED) --------
+    time_slot = int(getattr(args, "time_slot", 1))
+    T = 24 * 60 // max(1, time_slot)
 
-    train_time = generate_time_features(df_rest.index[:train_steps])
-    val_time = generate_time_features(df_rest.index[train_steps:])
-    test_time = generate_time_features(df_test.index)
+    def _to_numpy_1d(x):
+        return x.to_numpy() if hasattr(x, "to_numpy") else np.asarray(x)
 
-    trainTE = seq2instance(train_time, args.P, args.Q)
-    trainTE = np.concatenate(trainTE, axis=1).astype(np.int32)
-    valTE = seq2instance(val_time, args.P, args.Q)
-    valTE = np.concatenate(valTE, axis=1).astype(np.int32)
-    testTE = seq2instance(test_time, args.P, args.Q)
-    testTE = np.concatenate(testTE, axis=1).astype(np.int32)
+    def generate_time_features(time_index: pd.DatetimeIndex) -> np.ndarray:
+        # day of week: 0..6
+        dow = _to_numpy_1d(time_index.weekday).astype(np.int64).reshape(-1, 1)
+        # minutes since midnight
+        minutes = _to_numpy_1d(time_index.hour) * 60 + _to_numpy_1d(time_index.minute)
+        # time of day bucket 0..T-1
+        tod = _to_numpy_1d((minutes // time_slot) % T).astype(np.int64).reshape(-1, 1)
+        return np.concatenate((dow, tod), axis=-1)
+
+    train_time_feat = generate_time_features(df_rest.index[:train_steps])
+    val_time_feat   = generate_time_features(df_rest.index[train_steps:])
+    test_time_feat  = generate_time_features(df_test.index)
+
+    trainTE = np.concatenate(seq2instance(train_time_feat, args.P, args.Q), axis=1).astype(np.int32)
+    valTE   = np.concatenate(seq2instance(val_time_feat,   args.P, args.Q), axis=1).astype(np.int32)
+    testTE  = np.concatenate(seq2instance(test_time_feat,  args.P, args.Q), axis=1).astype(np.int32)
+
+    # Optional checks
+    assert 0 <= trainTE[...,0].min() <= 6 and 0 <= trainTE[...,0].max() <= 6
+    assert 0 <=  valTE[...,0].min() <= 6 and 0 <=  valTE[...,0].max() <= 6
+    assert 0 <= testTE[...,0].min() <= 6 and 0 <= testTE[...,0].max() <= 6
+    assert 0 <= trainTE[...,1].min() <  T and 0 <= trainTE[...,1].max() <  T
+    assert 0 <=  valTE[...,1].min() <  T and 0 <=  valTE[...,1].max() <  T
+    assert 0 <= testTE[...,1].min() <  T and 0 <= testTE[...,1].max() <  T
 
     if output_timestamps:
         return timestamps_testY
 
-    return trainX, trainTE, trainY, valX, valTE, valY, testX, testTE, testY, SE, mean, std
-
+    return (trainX, trainTE, trainY,
+            valX,   valTE,  valY,
+            testX,  testTE, testY,
+            SE, mean, std)
 
 def convert_timestamp_data(timestamp):
     """

@@ -71,44 +71,74 @@
 
 import tensorflow as tf
 
+# def conv2d(x, output_dims, kernel_size, stride=[1, 1],
+#            padding='SAME', use_bias=True, activation=tf.nn.relu,
+#            bn=False, bn_decay=None, is_training=None):
+#     """
+#     TF2/Keras conv2d that mirrors the old TF1 helper:
+#     - same signature (callers unchanged)
+#     - Keras layers underneath
+#     - ignores `is_training` (Keras handles train/infer automatically)
+#     """
+#     # sanitize shapes & padding
+#     ks = tuple(kernel_size) if isinstance(kernel_size, (list, tuple)) else (kernel_size, kernel_size)
+#     st = tuple(stride) if isinstance(stride, (list, tuple)) else (stride, stride)
+#     pad = 'same' if str(padding).upper() == 'SAME' else 'valid'
+
+#     # if BN follows, bias is typically redundant
+#     use_bias_eff = use_bias and not bn
+
+#     y = tf.keras.layers.Conv2D(
+#         filters=output_dims,
+#         kernel_size=ks,
+#         strides=st,
+#         padding=pad,
+#         use_bias=use_bias_eff,
+#         activation=None,
+#         kernel_initializer='glorot_uniform',
+#     )(x)
+
+#     if bn:
+#         # Map TF1 bn_decay (~moving avg "decay") to Keras BatchNorm "momentum"
+#         # Clamp to a safe range; BNMomentumScheduler will update this during training.
+#         mom = 0.99 if bn_decay is None else float(max(0.0, min(0.999, bn_decay)))
+#         y = tf.keras.layers.BatchNormalization(momentum=mom, epsilon=1e-3)(y)
+
+#     if activation is not None:
+#         y = tf.keras.layers.Activation(activation)(y)
+
+#     return y
+
 def conv2d(x, output_dims, kernel_size, stride=[1, 1],
            padding='SAME', use_bias=True, activation=tf.nn.relu,
            bn=False, bn_decay=None, is_training=None):
     """
-    TF2/Keras conv2d that mirrors the old TF1 helper:
-    - same signature (callers unchanged)
-    - Keras layers underneath
-    - ignores `is_training` (Keras handles train/infer automatically)
+    TF2/Keras conv2d that mirrors the TF1 order: Conv -> (BN) -> Activation.
     """
-    # sanitize shapes & padding
-    ks = tuple(kernel_size) if isinstance(kernel_size, (list, tuple)) else (kernel_size, kernel_size)
-    st = tuple(stride) if isinstance(stride, (list, tuple)) else (stride, stride)
+    strides = (int(stride[0]), int(stride[1]))
     pad = 'same' if str(padding).upper() == 'SAME' else 'valid'
 
-    # if BN follows, bias is typically redundant
-    use_bias_eff = use_bias and not bn
-
     y = tf.keras.layers.Conv2D(
-        filters=output_dims,
-        kernel_size=ks,
-        strides=st,
+        filters=int(output_dims),
+        kernel_size=tuple(int(k) for k in kernel_size),
+        strides=strides,
         padding=pad,
-        use_bias=use_bias_eff,
+        use_bias=use_bias,
         activation=None,
         kernel_initializer='glorot_uniform',
     )(x)
 
     if bn:
-        # Map TF1 bn_decay (~moving avg "decay") to Keras BatchNorm "momentum"
-        # Clamp to a safe range; BNMomentumScheduler will update this during training.
-        mom = 0.99 if bn_decay is None else float(max(0.0, min(0.999, bn_decay)))
-        y = tf.keras.layers.BatchNormalization(momentum=mom, epsilon=1e-3)(y)
+        momentum = 0.99 if bn_decay is None else float(bn_decay)
+        # Let Keras set training=True/False as appropriate during fit()/predict()
+        y = tf.keras.layers.BatchNormalization(
+            momentum=momentum, epsilon=1e-3
+        )(y)
 
     if activation is not None:
         y = tf.keras.layers.Activation(activation)(y)
 
     return y
-
 
 def batch_norm(x, is_training=None, bn_decay=None):
     """
