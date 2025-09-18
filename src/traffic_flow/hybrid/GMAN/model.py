@@ -27,6 +27,31 @@ def FC(x, units, activations, bn, bn_decay, is_training, use_bias=True):
     return x
 
 
+# def STEmbedding(SE, TE, T, D, bn, bn_decay, is_training):
+#     """
+#     spatio-temporal embedding
+#     SE: [N, D]
+#     TE: [batch, P+Q, 2] (dayofweek, timeofday)
+#     T:  num of time steps in one day
+#     D:  output dims
+#     return: [batch, P+Q, N, D]
+#     """
+#     # spatial embedding
+#     SE = K.expand_dims(K.expand_dims(SE, axis=0), axis=0)
+#     SE = FC(SE, units=[D, D], activations=[tf.nn.relu, None],
+#             bn=bn, bn_decay=bn_decay, is_training=is_training)
+
+#     # temporal embedding (use keras.ops.one_hot to stay Keras3-safe)
+#     dayofweek = tf.one_hot(TE[..., 0], 7)
+#     timeofday = tf.one_hot(TE[..., 1], T)
+#     TE = tf.concat((dayofweek, timeofday), axis=-1)
+#     TE = tf.expand_dims(TE, axis=2)
+#     TE = FC(TE, units=[D, D], activations=[tf.nn.relu, None],
+#             bn=bn, bn_decay=bn_decay, is_training=is_training)
+#     return K.add(SE, TE)
+
+
+from tensorflow.keras.layers import Lambda, Concatenate
 def STEmbedding(SE, TE, T, D, bn, bn_decay, is_training):
     '''
     spatio-temporal embedding
@@ -37,99 +62,115 @@ def STEmbedding(SE, TE, T, D, bn, bn_decay, is_training):
     retrun: [batch_size, P + Q, N, D]
     '''
     # spatial embedding
-    # Use K.expand_dims to be Keras3-friendly with KerasTensors/constants
     SE = K.expand_dims(K.expand_dims(SE, axis=0), axis=0)
     SE = FC(
         SE, units=[D, D], activations=[tf.nn.relu, None],
         bn=bn, bn_decay=bn_decay, is_training=is_training)
+
     # temporal embedding
-    # tf.one_hot on a KerasTensor is fine; we keep it for exact behavior.
-    dayofweek = tf.one_hot(TE[..., 0], depth=7)
-    timeofday = tf.one_hot(TE[..., 1], depth=T)
-    TE = K.concat((dayofweek, timeofday), axis=-1)
-    TE = K.expand_dims(TE, axis=2)
+    day_idx = Lambda(lambda t: t, name="extract_day")(TE[..., 0])
+    dayofweek = Lambda(
+        lambda t: tf.one_hot(tf.cast(t, tf.int32), depth=7),
+        output_shape=lambda s: (s[0], s[1], 7),
+        name="one_hot_dayofweek",
+        dtype="float32",
+    )(day_idx)
+
+    tod_idx = Lambda(lambda t: t, name="extract_tod")(TE[..., 1])
+    timeofday = Lambda(
+        lambda t, depth=T: tf.one_hot(tf.cast(t, tf.int32), depth=depth),
+        output_shape=lambda s, depth=T: (s[0], s[1], depth),
+        name="one_hot_timeofday",
+        dtype="float32",
+    )(tod_idx)
+
+    # <-- Replace tf.concat with the layer variant
+    TE = Concatenate(axis=-1, name="concat_temporal")([dayofweek, timeofday])
+
+    TE = Lambda(
+        lambda t: tf.expand_dims(t, axis=2),
+        output_shape=lambda s: (s[0], s[1], 1, s[2]),
+        name="expand_te"
+    )(TE)
+
     TE = FC(
         TE, units=[D, D], activations=[tf.nn.relu, None],
         bn=bn, bn_decay=bn_decay, is_training=is_training)
+
     return K.add(SE, TE)
 
 
 # ---- Helpers to split/merge attention heads without python-side shape math ----
 def _split_heads_reshape(x, K_heads, d):
-    """
-    Input:  x shape (B, S, N, K_heads*d)
-    Return: shape (B*K_heads, S, N, d)
-    All transforms use graph ops; never multiply symbolic dims in Python.
-    """
-    # (B, S, N, K*d) -> (B, S, N, K, d)
-    x = K.reshape(x, (-1, K.shape(x)[1], K.shape(x)[2], K_heads, d))
-    # (B, K, S, N, d)
-    x = K.transpose(x, (0, 3, 1, 2, 4))
-    # (B*K, S, N, d)
-    x = K.reshape(x, (-1, K.shape(x)[2], K.shape(x)[3], K.shape(x)[4]))
-    return x
-
+    """(B,S,N,K*d) -> (B*K, S, N, d) by folding heads into batch."""
+    def fn(t):
+        shape = tf.shape(t)         # [B, S, N, K*d]
+        B, S, N = shape[0], shape[1], shape[2]
+        return tf.reshape(t, (B * K_heads, S, N, d))
+    def out_shape(in_shape):
+        # Keras expects shape *without* batch dim
+        S, N = in_shape[1], in_shape[2]
+        return (S, N, d)
+    return Lambda(fn, output_shape=out_shape, name="split_heads")(x)
 
 def _merge_heads_concat(x, K_heads):
-    """
-    Inverse of _split_heads_reshape.
-    Input:  x shape (B*K_heads, S, N, d)
-    Return: shape (B, S, N, K_heads*d)
-    """
-    BK = K.shape(x)[0]
-    S  = K.shape(x)[1]
-    Nn = K.shape(x)[2]
-    d  = K.shape(x)[3]
-    # Recover B via integer division in the graph
-    B = BK // K_heads
-    # (B*K, S, N, d) -> (B, K, S, N, d)
-    x = K.reshape(x, (B, K_heads, S, Nn, d))
-    # (B, S, N, K, d) -> (B, S, N, K*d)
-    x = K.transpose(x, (0, 2, 3, 1, 4))
-    x = K.reshape(x, (B, S, Nn, K_heads * d))
-    return x
+    """(B*K, S, N, d) -> (B, S, N, K*d) by unfolding heads out of batch and concatenating."""
+    def fn(t):
+        shape = tf.shape(t)         # [B*K, S, N, d]
+        BK, S, N, d = shape[0], shape[1], shape[2], shape[3]
+        B = BK // K_heads
+        t = tf.reshape(t, (B, K_heads, S, N, d))     # (B, K, S, N, d)
+        t = tf.transpose(t, (0, 2, 3, 1, 4))         # (B, S, N, K, d)
+        t = tf.reshape(t, (B, S, N, K_heads * d))    # (B, S, N, K*d)
+        return t
+    def out_shape(in_shape):
+        S, N, d = in_shape[1], in_shape[2], in_shape[3]
+        kd = (d * K_heads) if isinstance(d, int) else None
+        return (S, N, kd)
+    return Lambda(fn, output_shape=out_shape, name="merge_heads")(x)
 
 
 
 def spatialAttention(X, STE, K_heads, d, bn, bn_decay, is_training):
-    '''
-    spatial attention mechanism
-    X:      [batch_size, num_step, N, D]
-    STE:    [batch_size, num_step, N, D]
-    K:      number of attention heads
-    d:      dimension of each attention outputs
-    return: [batch_size, num_step, N, D]
-    '''
+    """
+    X, STE: (B, S, N, D)   -> returns (B, S, N, D) with D = K_heads * d
+    """
     D = int(K_heads * d)
-    X = K.concat((X, STE), axis=-1)
-    # [batch_size, num_step, N, K * d]
-    query = FC(
-        X, units=D, activations=tf.nn.relu,
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
-    key = FC(
-        X, units=D, activations=tf.nn.relu,
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
-    value = FC(
-        X, units=D, activations=tf.nn.relu,
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
 
-    # Split heads via reshape (no Python math on symbolic dims)
-    # [K * batch_size, num_step, N, d]
-    query = _split_heads_reshape(query, K_heads, d)
-    key   = _split_heads_reshape(key,   K_heads, d)
-    value = _split_heads_reshape(value, K_heads, d)
+    # Keep a 4D reference for batch size recovery during merge:
+    X_ref = X
 
-    # [K * batch_size, num_step, N, N]
-    attention = K.matmul(query, K.transpose(key, (0, 1, 3, 2)))
-    attention = attention / (d ** 0.5)
-    attention = K.softmax(attention, axis=-1)
+    # concat features for Q/K/V
+    inp = Concatenate(axis=-1, name="sa_concat_x_ste")([X, STE])
 
-    # [batch_size, num_step, N, D]
-    X = K.matmul(attention, value)  # (B*K, S, N, d)
-    X = _merge_heads_concat(X, K_heads)  # (B, S, N, K*d)
-    X = FC(
-        X, units=[D, D], activations=[tf.nn.relu, None],
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
+    query = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
+    key   = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
+    value = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
+
+    q = _split_heads_reshape(query, K_heads, d)   # (B*K, S, N, d)
+    k = _split_heads_reshape(key,   K_heads, d)   # (B*K, S, N, d)
+    v = _split_heads_reshape(value, K_heads, d)   # (B*K, S, N, d)
+
+    # attention = tf.matmul(q, k, transpose_b=True)  # (B*K, S, N, N)
+    att = Lambda(
+        lambda t: tf.matmul(t[0], t[1], transpose_b=True),
+        output_shape=lambda s: (s[0][1], s[0][2], s[1][2]),
+        name="sa_qk",
+    )([q, k])
+
+    # scale & softmax
+    att = Lambda(lambda a: a / tf.sqrt(tf.cast(d, a.dtype)), output_shape=lambda s: s, name="sa_scale")(att)
+    att = Softmax(axis=-1, name="sa_softmax")(att)
+
+    # X = tf.matmul(att, v)  # (B*K, S, N, d)
+    x = Lambda(
+        lambda t: tf.matmul(t[0], t[1]),
+        output_shape=lambda s: (s[0][1], s[0][2], s[1][3]),
+        name="sa_av",
+    )([att, v])
+
+    X = _merge_heads_concat(x, K_heads)  # (B, S, N, K*d)
+    X = FC(X, units=[D, D], activations=[tf.nn.relu, None], bn=bn, bn_decay=bn_decay, is_training=is_training)
     return X
 
 
@@ -142,65 +183,44 @@ def temporalAttention(X, STE, K_heads, d, bn, bn_decay, is_training, mask=True):
     d:      dimension of each attention outputs
     return: [batch_size, num_step, N, D]
     '''
-    D = K_heads * d
-    Xcat = K.concat((X, STE), axis=-1)
+    D = int(K_heads * d)
+    X_ref = X
+    inp = Concatenate(axis=-1, name="ta_concat_x_ste")([X, STE])
 
-    query = FC(
-        Xcat, units=D, activations=tf.nn.relu,
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
-    key = FC(
-        Xcat, units=D, activations=tf.nn.relu,
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
-    value = FC(
-        Xcat, units=D, activations=tf.nn.relu,
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
+    query = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
+    key   = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
+    value = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
 
-    # [K * batch_size, num_step, N, d]
+    # (B, S, N, K*d) -> (B*K, S, N, d)
     query = _split_heads_reshape(query, K_heads, d)
     key   = _split_heads_reshape(key,   K_heads, d)
     value = _split_heads_reshape(value, K_heads, d)
 
-    # query: [K * batch_size, N, num_step, d]
-    # key:   [K * batch_size, N, d, num_step]
-    # value: [K * batch_size, N, num_step, d]
-    query = K.transpose(query, (0, 2, 1, 3))
-    key   = K.transpose(key,   (0, 2, 3, 1))
-    value = K.transpose(value, (0, 2, 1, 3))
+    # transpose to temporal layout:
+    # query: (B*K, N, S, d), key: (B*K, N, d, S), value: (B*K, N, S, d)
+    query = tf.transpose(query, (0, 2, 1, 3))
+    key   = tf.transpose(key,   (0, 2, 3, 1))
+    value = tf.transpose(value, (0, 2, 1, 3))
 
-    # [K * batch_size, N, num_step, num_step]
-    attention = K.matmul(query, key)
-    attention = attention / (d ** 0.5)
+    attention = tf.matmul(query, key) / tf.sqrt(tf.cast(d, tf.float32))  # (B*K, N, S, S)
 
-    # mask attention score
     if mask:
-        # S = number of steps (last dim of attention)
-        S  = K.shape(attention)[-1]
-        KB = K.shape(attention)[0]   # K*B
-        Nn = K.shape(attention)[1]   # N
+        S = tf.shape(attention)[-1]
+        tril = tf.linalg.band_part(tf.ones((S, S), dtype=tf.float32), -1, 0)
+        tril = tf.reshape(tril, (1, 1, S, S))
+        attention = tf.where(tril > 0, attention, tf.fill(tf.shape(attention), tf.constant(-2**15 + 1, tf.float32)))
 
-        # Build (S, S) lower-triangular matrix with dynamic shape
-        ones_S   = tf.ones(tf.stack([S, S]), dtype=attention.dtype)
-        lower    = tf.linalg.LinearOperatorLowerTriangular(ones_S).to_dense()  # (S, S)
-        lower    = K.expand_dims(K.expand_dims(lower, axis=0), axis=0)         # (1,1,S,S)
+    attention = tf.nn.softmax(attention, axis=-1)
 
-        # Tile to (K*B, N, S, S) with dynamic multiples
-        multiples = tf.stack([KB, Nn, tf.constant(1, tf.int32), tf.constant(1, tf.int32)])
-        lower     = tf.tile(lower, multiples)
+    # back to (B*K, S, N, d)
+    out = tf.matmul(attention, value)               # (B*K, N, S, d)
+    out = tf.transpose(out, (0, 2, 1, 3))          # (B*K, S, N, d)
 
-        very_neg  = tf.cast(-2 ** 15 + 1, attention.dtype)
-        attention = tf.where(lower > 0, attention, very_neg)
+    # merge heads: (B*K, S, N, d) -> (B, S, N, K*d)
+    X = _merge_heads_concat(out, K_heads, ref4d=X_ref)
 
-    # softmax
-    attention = K.softmax(attention, axis=-1)
-
-    # [batch_size, num_step, N, D]
-    Xout = K.matmul(attention, value)            # (B*K, N, S, d)
-    Xout = K.transpose(Xout, (0, 2, 1, 3))       # (B*K, S, N, d)
-    Xout = _merge_heads_concat(Xout, K_heads)    # (B, S, N, K*d)
-    Xout = FC(
-        Xout, units=[D, D], activations=[tf.nn.relu, None],
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
-    return Xout
+    X = FC(X, units=[D, D], activations=[tf.nn.relu, None], bn=bn, bn_decay=bn_decay, is_training=is_training)
+    return X
 
 
 def gatedFusion(HS, HT, D, bn, bn_decay, is_training):
@@ -301,7 +321,8 @@ def GMAN(X, TE, SE, P, Q, T, L, K_heads, d, bn, bn_decay, is_training):
     '''
     D = K_heads * d
     # input
-    X = K.expand_dims(X, axis=-1)
+    #X = K.expand_dims(X, axis=-1)
+    X = Lambda(lambda t: tf.expand_dims(t, axis=-1), name="x_expand_last")(X)
     X = FC(
         X, units=[D, D], activations=[tf.nn.relu, None],
         bn=bn, bn_decay=bn_decay, is_training=is_training)
@@ -322,7 +343,9 @@ def GMAN(X, TE, SE, P, Q, T, L, K_heads, d, bn, bn_decay, is_training):
     X = FC(
         X, units=[D, 1], activations=[tf.nn.relu, None],
         bn=bn, bn_decay=bn_decay, is_training=is_training)
-    return tf.squeeze(X, axis=3)
+    X = Lambda(lambda t: tf.squeeze(t, axis=3), name="x_squeeze_axis3")(X)
+    #return K.squeeze(X, axis=3)
+    return X
 
 # def mae_loss(pred, label):
 #     """
@@ -371,7 +394,7 @@ def mae_loss(pred, label):
     label_last = label[:, -1, :]  # Shape: (batch_size, num_sensors)
 
     # Compute absolute error only on last timestep
-    loss = tf.abs(tf.subtract(pred_last, label_last))
+    loss = K.abs(K.subtract(pred_last, label_last))
 
     # Ignore zero values (optional)
     mask = tf.not_equal(label_last, 0)

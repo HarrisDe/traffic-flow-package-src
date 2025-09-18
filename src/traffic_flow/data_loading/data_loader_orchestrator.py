@@ -36,7 +36,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         *,
         sensor_col: str = "sensor_id",
         value_col: str = "value",
-        datetime_cols: Optional[List[str]] = None,
+        datetime_col: Optional[List[str]] = "date",
         disable_logs: bool = False,
         df_gman: Optional[pd.DataFrame] = None,
         test_start_time: Optional[Union[str, pd.Timestamp]] = None,
@@ -46,7 +46,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         self.file_path = file_path
         self.sensor_col = sensor_col
         self.value_col = value_col
-        self.datetime_cols = datetime_cols or ["datetime", "date"]
+        self.datetime_col = datetime_col
         self.df_gman = df_gman                   # kept for legacy calls
         self.test_start_time = (
             pd.to_datetime(test_start_time) if test_start_time is not None else None
@@ -57,7 +57,6 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         self.df_raw: Optional[pd.DataFrame] = None
         self.df_orig: Optional[pd.DataFrame] = None
         self.df_orig_smoothed: Optional[pd.DataFrame] = None
-        self.datetime_col: Optional[str] = None
         self.first_test_timestamp: Optional[pd.Timestamp] = None
 
     # ------------------------------------------------------------------ #
@@ -73,7 +72,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
     # ------------------------------------------------------------------ #
     
     
-    def load_data_parquet(self) -> None:
+    def load_data_parquet(self,cols= None) -> None:
         
         path = str(self.file_path)
         print(f"path: {path}")
@@ -81,18 +80,20 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
             raise FileNotFoundError(f"Parquet path not found: {path}")
 
         #self.df = self._read_parquet_robust(self.file_path)
-        self.df = pd.read_parquet(self.file_path)
-        self.df_raw = self.df.copy()  # keep the raw data for reference
+        if cols is None:
+            self.df = pd.read_parquet(self.file_path)
+            self.df_raw = self.df.copy()  # keep the raw data for reference
+        else:
+            self.df = pd.read_parquet(self.file_path, columns=cols)
+            self.df_raw = self.df.copy()
 
         # resolve datetime column
-        for col in self.datetime_cols:
-            if col in self.df.columns:
-                self.datetime_col = col
-                self.df[col] = pd.to_datetime(self.df[col])
-                break
+
+        if self.datetime_col in self.df.columns:
+            self.df[self.datetime_col] = pd.to_datetime(self.df[self.datetime_col])
         else:
             raise ValueError(
-                "None of the datetime columns {} were found.".format(self.datetime_cols)
+                "None of the datetime columns {} were found.".format(self.datetime_col)
             )
 
         if self.sensor_col not in self.df.columns:
@@ -164,6 +165,7 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
     def get_data(
         self,
         *,
+        cols: Optional[List[str]] = None,
         window_size: int = 5,
         filter_on_train_only: bool = False,
         filter_extreme_changes: bool = True,
@@ -183,7 +185,9 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         DeprecationWarning is raised and the merge is delegated to
         ``GMANPredictionAdder`` (requires ``df_gman``).
         """
-        self.load_data_parquet()
+        self._log(f"Reading parquet with specified columns: {cols}")
+        self.load_data_parquet(cols=cols)
+        self._log(f"Loaded parquet with columns: {self.df.columns}")
         self.align_sensors_to_common_timeframe()
         self.add_test_set_column(test_size=test_size, test_start_time=test_start_time)
 
@@ -331,7 +335,11 @@ class InitialTrafficDataLoader(LoggingMixin):  # type: ignore[misc]
         datetime_as_index : bool = True
     ) -> pd.DataFrame:
         
-        df = self.get_data(window_size=window_size,
+        cols = None if self.datetime_col is None else [
+        self.sensor_col, self.datetime_col, self.value_col
+    ]
+        df = self.get_data(cols = cols,
+            window_size=window_size,
             filter_on_train_only=filter_on_train_only,
             filter_extreme_changes=filter_extreme_changes,
             smooth_speeds=smooth_speeds,

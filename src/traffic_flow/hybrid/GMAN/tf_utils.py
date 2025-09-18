@@ -113,32 +113,32 @@ def conv2d(x, output_dims, kernel_size, stride=[1, 1],
            padding='SAME', use_bias=True, activation=tf.nn.relu,
            bn=False, bn_decay=None, is_training=None):
     """
-    TF2/Keras conv2d that mirrors the TF1 order: Conv -> (BN) -> Activation.
+    Keras-friendly conv2d using Keras layers so weights are tracked
+    and BN respects training/inference automatically.
     """
-    strides = (int(stride[0]), int(stride[1]))
     pad = 'same' if str(padding).upper() == 'SAME' else 'valid'
-
-    y = tf.keras.layers.Conv2D(
-        filters=int(output_dims),
-        kernel_size=tuple(int(k) for k in kernel_size),
-        strides=strides,
+    conv = tf.keras.layers.Conv2D(
+        filters=output_dims,
+        kernel_size=tuple(kernel_size),
+        strides=tuple(stride),
         padding=pad,
         use_bias=use_bias,
         activation=None,
         kernel_initializer='glorot_uniform',
     )(x)
 
+    y = conv
     if bn:
+        # TF1 used "bn_decay" as the EMA decay; Keras uses "momentum" for the moving average
         momentum = 0.99 if bn_decay is None else float(bn_decay)
-        # Let Keras set training=True/False as appropriate during fit()/predict()
-        y = tf.keras.layers.BatchNormalization(
-            momentum=momentum, epsilon=1e-3
-        )(y)
+        y = tf.keras.layers.BatchNormalization(momentum=momentum, epsilon=1e-3)(y)
+        # Do NOT force training=True/False: Keras will pass the correct flag
 
     if activation is not None:
         y = tf.keras.layers.Activation(activation)(y)
-
+        
     return y
+
 
 def batch_norm(x, is_training=None, bn_decay=None):
     """
