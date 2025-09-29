@@ -1,8 +1,8 @@
 from . import tf_utils
 import tensorflow as tf
 import keras.ops as K
-
-
+from tensorflow.keras.layers import Lambda, Concatenate, Softmax
+from tensorflow.keras.layers import Add, Multiply, Activation
 def placeholder(P, Q, N):
     X = tf.compat.v1.placeholder(shape=(None, P, N), dtype=tf.float32)
     TE = tf.compat.v1.placeholder(shape=(None, P + Q, 2), dtype=tf.int32)
@@ -51,7 +51,6 @@ def FC(x, units, activations, bn, bn_decay, is_training, use_bias=True):
 #     return K.add(SE, TE)
 
 
-from tensorflow.keras.layers import Lambda, Concatenate
 def STEmbedding(SE, TE, T, D, bn, bn_decay, is_training):
     '''
     spatio-temporal embedding
@@ -68,29 +67,26 @@ def STEmbedding(SE, TE, T, D, bn, bn_decay, is_training):
         bn=bn, bn_decay=bn_decay, is_training=is_training)
 
     # temporal embedding
-    day_idx = Lambda(lambda t: t, name="extract_day")(TE[..., 0])
+    day_idx = Lambda(lambda t: t)(TE[..., 0])
     dayofweek = Lambda(
         lambda t: tf.one_hot(tf.cast(t, tf.int32), depth=7),
         output_shape=lambda s: (s[0], s[1], 7),
-        name="one_hot_dayofweek",
         dtype="float32",
     )(day_idx)
 
-    tod_idx = Lambda(lambda t: t, name="extract_tod")(TE[..., 1])
+    tod_idx = Lambda(lambda t: t)(TE[..., 1])
     timeofday = Lambda(
         lambda t, depth=T: tf.one_hot(tf.cast(t, tf.int32), depth=depth),
         output_shape=lambda s, depth=T: (s[0], s[1], depth),
-        name="one_hot_timeofday",
         dtype="float32",
     )(tod_idx)
 
     # <-- Replace tf.concat with the layer variant
-    TE = Concatenate(axis=-1, name="concat_temporal")([dayofweek, timeofday])
+    TE = Concatenate(axis=-1)([dayofweek, timeofday])
 
     TE = Lambda(
         lambda t: tf.expand_dims(t, axis=2),
         output_shape=lambda s: (s[0], s[1], 1, s[2]),
-        name="expand_te"
     )(TE)
 
     TE = FC(
@@ -104,30 +100,25 @@ def STEmbedding(SE, TE, T, D, bn, bn_decay, is_training):
 def _split_heads_reshape(x, K_heads, d):
     """(B,S,N,K*d) -> (B*K, S, N, d) by folding heads into batch."""
     def fn(t):
-        shape = tf.shape(t)         # [B, S, N, K*d]
+        shape = tf.shape(t)        # [B, S, N, K*d]
         B, S, N = shape[0], shape[1], shape[2]
         return tf.reshape(t, (B * K_heads, S, N, d))
-    def out_shape(in_shape):
-        # Keras expects shape *without* batch dim
-        S, N = in_shape[1], in_shape[2]
-        return (S, N, d)
-    return Lambda(fn, output_shape=out_shape, name="split_heads")(x)
+    # Let Keras infer output shape; if you want to specify:
+    # return Lambda(fn, output_shape=lambda s: (None, s[1], s[2], d), name="split_heads")(x)
+    return Lambda(fn)(x)
 
 def _merge_heads_concat(x, K_heads):
     """(B*K, S, N, d) -> (B, S, N, K*d) by unfolding heads out of batch and concatenating."""
     def fn(t):
-        shape = tf.shape(t)         # [B*K, S, N, d]
+        shape = tf.shape(t)        # [B*K, S, N, d]
         BK, S, N, d = shape[0], shape[1], shape[2], shape[3]
         B = BK // K_heads
-        t = tf.reshape(t, (B, K_heads, S, N, d))     # (B, K, S, N, d)
-        t = tf.transpose(t, (0, 2, 3, 1, 4))         # (B, S, N, K, d)
-        t = tf.reshape(t, (B, S, N, K_heads * d))    # (B, S, N, K*d)
-        return t
-    def out_shape(in_shape):
-        S, N, d = in_shape[1], in_shape[2], in_shape[3]
-        kd = (d * K_heads) if isinstance(d, int) else None
-        return (S, N, kd)
-    return Lambda(fn, output_shape=out_shape, name="merge_heads")(x)
+        t = tf.reshape(t, (B, K_heads, S, N, d))   # (B, K, S, N, d)
+        t = tf.transpose(t, (0, 2, 3, 1, 4))       # (B, S, N, K, d)
+        return tf.reshape(t, (B, S, N, K_heads * d))
+    # Let Keras infer output shape; if you want to specify:
+    # return Lambda(fn, output_shape=lambda s: (None, s[1], s[2], None), name="merge_heads")(x)
+    return Lambda(fn)(x)
 
 
 
@@ -141,7 +132,7 @@ def spatialAttention(X, STE, K_heads, d, bn, bn_decay, is_training):
     X_ref = X
 
     # concat features for Q/K/V
-    inp = Concatenate(axis=-1, name="sa_concat_x_ste")([X, STE])
+    inp = Concatenate(axis=-1)([X, STE])
 
     query = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
     key   = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
@@ -152,22 +143,14 @@ def spatialAttention(X, STE, K_heads, d, bn, bn_decay, is_training):
     v = _split_heads_reshape(value, K_heads, d)   # (B*K, S, N, d)
 
     # attention = tf.matmul(q, k, transpose_b=True)  # (B*K, S, N, N)
-    att = Lambda(
-        lambda t: tf.matmul(t[0], t[1], transpose_b=True),
-        output_shape=lambda s: (s[0][1], s[0][2], s[1][2]),
-        name="sa_qk",
-    )([q, k])
+    att = Lambda(lambda t: tf.matmul(t[0], t[1], transpose_b=True))([q, k])
 
-    # scale & softmax
-    att = Lambda(lambda a: a / tf.sqrt(tf.cast(d, a.dtype)), output_shape=lambda s: s, name="sa_scale")(att)
-    att = Softmax(axis=-1, name="sa_softmax")(att)
+    att = Lambda(lambda a: a / tf.sqrt(tf.cast(d, a.dtype)))(att)
+    att = Softmax(axis=-1)(att)
 
-    # X = tf.matmul(att, v)  # (B*K, S, N, d)
-    x = Lambda(
-        lambda t: tf.matmul(t[0], t[1]),
-        output_shape=lambda s: (s[0][1], s[0][2], s[1][3]),
-        name="sa_av",
-    )([att, v])
+    # x = tf.matmul(att, v)  -> (B*K, S, N, d)
+    x = Lambda(lambda t: tf.matmul(t[0], t[1]))([att, v])
+
 
     X = _merge_heads_concat(x, K_heads)  # (B, S, N, K*d)
     X = FC(X, units=[D, D], activations=[tf.nn.relu, None], bn=bn, bn_decay=bn_decay, is_training=is_training)
@@ -175,75 +158,66 @@ def spatialAttention(X, STE, K_heads, d, bn, bn_decay, is_training):
 
 
 def temporalAttention(X, STE, K_heads, d, bn, bn_decay, is_training, mask=True):
-    '''
-    temporal attention mechanism
-    X:      [batch_size, num_step, N, D]
-    STE:    [batch_size, num_step, N, D]
-    K:      number of attention heads
-    d:      dimension of each attention outputs
-    return: [batch_size, num_step, N, D]
-    '''
     D = int(K_heads * d)
-    X_ref = X
-    inp = Concatenate(axis=-1, name="ta_concat_x_ste")([X, STE])
+
+    # BEFORE: inp = tf.concat((X, STE), axis=-1)
+    inp = Concatenate(axis=-1)([X, STE])
 
     query = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
     key   = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
     value = FC(inp, units=D, activations=tf.nn.relu, bn=bn, bn_decay=bn_decay, is_training=is_training)
 
-    # (B, S, N, K*d) -> (B*K, S, N, d)
-    query = _split_heads_reshape(query, K_heads, d)
-    key   = _split_heads_reshape(key,   K_heads, d)
-    value = _split_heads_reshape(value, K_heads, d)
+    q = _split_heads_reshape(query, K_heads, d)   # (B*K, S, N, d)
+    k = _split_heads_reshape(key,   K_heads, d)
+    v = _split_heads_reshape(value, K_heads, d)
 
-    # transpose to temporal layout:
-    # query: (B*K, N, S, d), key: (B*K, N, d, S), value: (B*K, N, S, d)
-    query = tf.transpose(query, (0, 2, 1, 3))
-    key   = tf.transpose(key,   (0, 2, 3, 1))
-    value = tf.transpose(value, (0, 2, 1, 3))
+    # Transpose to (B*K, N, S, d) / (B*K, N, d, S) / (B*K, N, S, d)
+    qT = Lambda(lambda t: tf.transpose(t, (0, 2, 1, 3)))(q)
+    kT = Lambda(lambda t: tf.transpose(t, (0, 2, 3, 1)))(k)
+    vT = Lambda(lambda t: tf.transpose(t, (0, 2, 1, 3)))(v)
 
-    attention = tf.matmul(query, key) / tf.sqrt(tf.cast(d, tf.float32))  # (B*K, N, S, S)
+    att = Lambda(lambda t: tf.matmul(t[0], t[1]))([qT, kT])
 
     if mask:
-        S = tf.shape(attention)[-1]
-        tril = tf.linalg.band_part(tf.ones((S, S), dtype=tf.float32), -1, 0)
-        tril = tf.reshape(tril, (1, 1, S, S))
-        attention = tf.where(tril > 0, attention, tf.fill(tf.shape(attention), tf.constant(-2**15 + 1, tf.float32)))
+        def mask_fn(a):
+            BK = tf.shape(a)[0]; N = tf.shape(a)[1]; S = tf.shape(a)[2]
+            m  = tf.linalg.band_part(tf.ones((S, S), dtype=a.dtype), -1, 0)  # (S,S)
+            m  = tf.reshape(m, (1, 1, S, S))
+            m  = tf.tile(m, (BK, N, 1, 1))                                   # (B*K, N, S, S)
+            neg = tf.cast(-(2**15 - 1), a.dtype)
+            return tf.where(m > 0, a, neg)
+        att = Lambda(mask_fn)(att)
 
-    attention = tf.nn.softmax(attention, axis=-1)
+    att = Lambda(lambda a: a / tf.sqrt(tf.cast(d, a.dtype)))(att)
+    att = Softmax(axis=-1)(att)
 
-    # back to (B*K, S, N, d)
-    out = tf.matmul(attention, value)               # (B*K, N, S, d)
-    out = tf.transpose(out, (0, 2, 1, 3))          # (B*K, S, N, d)
+    xN = Lambda(lambda t: tf.matmul(t[0], t[1]))([att, vT])  # (B*K, N, S, d)
+    xS = Lambda(lambda t: tf.transpose(t, (0, 2, 1, 3)))(xN)  # (B*K, S, N, d)
 
-    # merge heads: (B*K, S, N, d) -> (B, S, N, K*d)
-    X = _merge_heads_concat(out, K_heads, ref4d=X_ref)
-
+    X  = _merge_heads_concat(xS, K_heads)  # (B, S, N, K*d) # (B, S, N, K*d)
     X = FC(X, units=[D, D], activations=[tf.nn.relu, None], bn=bn, bn_decay=bn_decay, is_training=is_training)
     return X
 
 
+
 def gatedFusion(HS, HT, D, bn, bn_decay, is_training):
-    '''
-    gated fusion
-    HS:     [batch_size, num_step, N, D]
-    HT:     [batch_size, num_step, N, D]
-    D:      output dims
-    return: [batch_size, num_step, N, D]
-    '''
-    XS = FC(
-        HS, units=D, activations=None,
-        bn=bn, bn_decay=bn_decay,
-        is_training=is_training, use_bias=False)
-    XT = FC(
-        HT, units=D, activations=None,
-        bn=bn, bn_decay=bn_decay,
-        is_training=is_training, use_bias=True)
-    z = tf.nn.sigmoid(K.add(XS, XT))
-    H = K.add(K.multiply(z, HS), K.multiply(1 - z, HT))
-    H = FC(
-        H, units=[D, D], activations=[tf.nn.relu, None],
-        bn=bn, bn_decay=bn_decay, is_training=is_training)
+    XS = FC(HS, units=D, activations=None, bn=bn, bn_decay=bn_decay,
+            is_training=is_training, use_bias=False)
+    XT = FC(HT, units=D, activations=None, bn=bn, bn_decay=bn_decay,
+            is_training=is_training, use_bias=True)
+
+    # ✅ correct chaining: Add() produces a tensor, then Activation consumes it
+    sum_x = Add()([XS, XT])
+    z = Activation('sigmoid')(sum_x)
+
+    one_minus_z = Lambda(lambda t: 1.0 - t)(z)
+    H = Add()([
+        Multiply()([z, HS]),
+        Multiply()([one_minus_z, HT]),
+    ])
+
+    H = FC(H, units=[D, D], activations=[tf.nn.relu, None],
+           bn=bn, bn_decay=bn_decay, is_training=is_training)
     return H
 
 
@@ -322,7 +296,7 @@ def GMAN(X, TE, SE, P, Q, T, L, K_heads, d, bn, bn_decay, is_training):
     D = K_heads * d
     # input
     #X = K.expand_dims(X, axis=-1)
-    X = Lambda(lambda t: tf.expand_dims(t, axis=-1), name="x_expand_last")(X)
+    X = Lambda(lambda t: tf.expand_dims(t, axis=-1))(X)
     X = FC(
         X, units=[D, D], activations=[tf.nn.relu, None],
         bn=bn, bn_decay=bn_decay, is_training=is_training)
@@ -343,7 +317,7 @@ def GMAN(X, TE, SE, P, Q, T, L, K_heads, d, bn, bn_decay, is_training):
     X = FC(
         X, units=[D, 1], activations=[tf.nn.relu, None],
         bn=bn, bn_decay=bn_decay, is_training=is_training)
-    X = Lambda(lambda t: tf.squeeze(t, axis=3), name="x_squeeze_axis3")(X)
+    X = Lambda(lambda t: tf.squeeze(t, axis=3))(X)
     #return K.squeeze(X, axis=3)
     return X
 

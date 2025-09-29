@@ -553,7 +553,7 @@ def test_gman_opt(args, net, testX, testTE, testY, log=None):
           ['batch_nr','sample_nr','timestep','timestamp', <sensor>, <sensor>_pred, ...]
     """
     import time, numpy as np, pandas as pd
-    from . import utils as _u  # already imported above as "import utils", but safe here
+    # already imported above as "import utils", but safe here
 
     num_test = testX.shape[0]
     num_timesteps = testY.shape[1]
@@ -574,7 +574,7 @@ def test_gman_opt(args, net, testX, testTE, testY, log=None):
         sensor_ids = [f"S{i}" for i in range(N)]
 
     # Timestamps for test set (shape to (num_test, num_timesteps))
-    ts = _u.loadData_test_set_as_input_column(args, output_timestamps=True)
+    ts = utils.loadData_test_set_as_input_column(args, output_timestamps=True)
     # Robustly coerce to ndarray
     if isinstance(ts, tuple):
         ts = ts[0]
@@ -591,7 +591,7 @@ def test_gman_opt(args, net, testX, testTE, testY, log=None):
     timestamps_flat = timestamps_testY.reshape(-1)
 
     # Convert to human-readable timestamps
-    convert_ts = np.vectorize(_u.convert_timestamp_data)
+    convert_ts = np.vectorize(utils.convert_timestamp_data)
     timestamps_converted = convert_ts(timestamps_flat)
 
     # Batch numbers (1-based), per *sample* then repeated across timesteps
@@ -774,7 +774,16 @@ def save_results(args, results_dir, results_filename, AE, RMSE, MAPE, SMAPE,
 
     # Load, append, reorder, and save
     df = pd.read_csv(results_file)
-    df = df.append(new_row, ignore_index=True)
+    if isinstance(new_row, pd.Series):
+        row = new_row.to_frame().T
+    elif isinstance(new_row, dict):
+        # build with the same columns to keep order & fill missing with NA
+        row = pd.DataFrame([new_row], columns=df.columns)
+    else:
+        # assume it's positional values matching df.columns
+        row = pd.DataFrame([new_row], columns=df.columns)
+
+    df = pd.concat([df, row], ignore_index=True)
     df = df[columns]  # Enforce column order
     df.to_csv(results_file, index=False)
     print(f"✅ Metrics saved to {results_file}")
