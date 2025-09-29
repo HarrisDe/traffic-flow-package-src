@@ -4,14 +4,11 @@ import pandas as pd
 from datetime import datetime
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import argparse, pathlib, time, joblib, json
-from traffic_flow import (
-    TrafficDataPipelineOrchestrator,
-    ModelTunerXGB,
-    ModelEvaluator
-)
+from traffic_flow import TrafficDataPipelineOrchestrator, ModelTunerXGB
+from traffic_flow.tabular.evaluation.model_comparison import ModelEvaluator
 from traffic_flow.utils.helper_utils import LoggingMixin
-from traffic_flow.constants.constants import (WEATHER_COLUMNS
-)
+from traffic_flow.tabular.constants.constants import WEATHER_COLUMNS
+
 
 
 def main(args):
@@ -126,25 +123,17 @@ def main(args):
     df_metrics.to_csv(metrics_csv_file, index=False)
         
      # ----- Save raw predictions ---------------------------------
-    time_axis = tdp.df.loc[tdp.df["test_set"],
-                           ["date_of_prediction", "sensor_id"]]
+    time_axis = me.df_for_ML.loc[:, ["prediction_time", tdp.sensor_col]].reset_index(drop=True)
 
-    # keep the ground truth only once and call it "y_test"
-    df_pred = pd.concat(
-        [time_axis,
-            me.y_test.rename("y_test"),   
-            me.y_pred], axis=1
-    )
-    df_pred.columns = [
-        "date",
-        "sensor_id",
-        "y_test",                     
-        f"y_pred_h_{args.horizon}",
-    ]
+    y_test_s = pd.Series(me.y_test, name="y_test").reset_index(drop=True)
+    y_pred_s = pd.Series(me.y_pred, name=f"y_pred_h_{args.horizon}").reset_index(drop=True)
+
+    df_pred = pd.concat([time_axis, y_test_s, y_pred_s], axis=1)
+    df_pred.columns = ["date", "sensor_id", "y_test", f"y_pred_h_{args.horizon}"]
+
     predictions_file = out_dir / f"{timestamp}_all_predictions_h-{args.horizon}.parquet"
     df_pred.to_parquet(predictions_file)
     df_pred.to_csv(out_dir / f"{timestamp}_all_predictions_h-{args.horizon}.csv", index=False)
-    
     
     # 3. bundle preprocessor + model into ONE artifact
     # bundle = {
@@ -201,7 +190,7 @@ if __name__ == "__main__":
     p.add_argument("--datetime-col", default="date")
     p.add_argument("--value-col", default="value")
     p.add_argument("--new-sensor-id-col", default="sensor_uid")
-    p.add_argument("--disable-logs", action="store_false")
+    p.add_argument("--disable-logs", action="store_true")
 
     # === run_pipeline ===
     p.add_argument("--test-size", type=float, default=1/3)

@@ -31,40 +31,45 @@ from ...preprocessing.dtypes import build_dtype_schema, enforce_dtypes
 
 
 
-def _default_upstream_shifted_params(self) -> Dict[str, Any]:
-    return {
-        # provide dict so inference can re-use exactly the same neighbor graph
-        "upstream_dict": getattr(self, "upstream_dict", None),
-        "sensor_dict_path": getattr(self, "sensor_dict_path", None),
-
-        "spatial_adj": 1,                           # first upstream by default
-        "datetime_col": self.datetime_col,
-        "value_col": self.value_col,
-        "sensor_col": self.sensor_col,
-
-        "freeflow_percentile": 0.95,                # 95th pct “free-flow”
-        "use_upstream_freeflow": True,              # use upstream’s free-flow
-        "fallback_freeflow_kph": 100.0,             # when quantile is NA/0
-        "minutes_per_row": float(getattr(self, "minutes_per_row", 1.0)),
-        "cap_minutes": 30.0,                        # clamp τ
-
-        # which features to materialize
-        "add_speed": True,
-        "add_delta1": True,
-        "add_slope": True,
-        "slope_windows": (3, 5),
-
-        "fill_nans_value": -1.0,
-        "disable_logs": self.disable_logs,
-    }
-
-
-# ---- Momentum defaults (computed at call-time to pick up current attrs) ----
-
-
 class TrafficDataPipelineOrchestrator(LoggingMixin):
     """
-    End-to-end feature-engineering pipeline.
+    End-to-end, horizon-aware feature engineering orchestrator for traffic flow forecasting.
+
+    High-level flow:
+    ----------------
+    1) prepare_base_features(...)
+       - Load & clean data (smoothing, filtering, train/test split anchoring)
+       - Sensor encoding (ordinal/mean)
+       - Calendar/time features (year/month/day/hour, etc.)
+       - Spatial adjacency features (neighbor speeds/distances)
+       - Temporal lag features (relative or absolute lags)
+       - Congestion & outlier flags (per-sensor quantiles + global bounds)
+       - [Optional] Adjacency congestion features
+       - [Optional] Upstream travel-time–shifted features (physics-inspired τ shift)
+       - [Optional] Momentum features (slopes, EWM, volatility, minmax)
+
+       Caches a "base_df" that is horizon-agnostic.
+
+    2) finalise_for_horizon(...)
+       - [Optional] Merge GMAN predictions (and place them before lag features)
+       - Previous weekday window feature (raw previous weekday at target time)
+       - Prediction-time cyclical encodings (target time and optionally current time)
+       - [Optional] Drop weather columns
+       - Create target columns (total speed / delta speed vs GMAN)
+       - Enforce compact dtypes
+       - Train/test split into X/y with final column drops for modeling
+
+    3) run_pipeline(...)
+       - Thin façade that exposes *all* arguments of both stages and runs them in order.
+
+    Notes on internal state:
+    ------------------------
+    - `self.feature_log` tracks emitted feature groups and their column names.
+    - `self._lag_anchor_col` stores the *name* of the first lag feature so we can
+      compute its *index* later (prevents staleness when new columns are added).
+    - `self.upstream_dict` and `self.downstream_dict` are the canonical attribute
+      names; legacy mirrors (`upstream_sensor_dict`, `downstream_sensor_dict`) are
+      maintained for backward compatibility.
     """
 
     # ------------------------------------------------------------------ #
@@ -85,57 +90,80 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
     ) -> None:
         super().__init__(disable_logs=disable_logs)
 
+        # --- Core schema & IO
         self.file_path = file_path
         self.sensor_dict_path = os.path.dirname(file_path)
+
+        # --- Column names
         self.sensor_col = sensor_col
         self.new_sensor_col = new_sensor_col
         self.datetime_col = datetime_col
         self.value_col = value_col
         self.weather_cols = weather_cols or []
-        self.df_gman_legacy = df_gman                    # used only in run_pipeline
+
+        # --- Legacy GMAN compatibility
+        self.df_gman_legacy = df_gman
+
+        # --- Config
         self.sensor_encoding_type = sensor_encoding_type
 
-        # run-time state
+        # --- Run-time states (set during pipeline)
         self.df_orig: Optional[pd.DataFrame] = None
+        self.df_orig_smoothed: Optional[pd.DataFrame] = None
+        self.df_raw: Optional[pd.DataFrame] = None
+        self.df_raw_test: Optional[pd.DataFrame] = None
+
         self.df: Optional[pd.DataFrame] = None
         self.base_df: Optional[pd.DataFrame] = None
         self.first_test_timestamp: Optional[pd.Timestamp] = None
+        self.last_test_timestamp: Optional[pd.Timestamp] = None
+
         self.feature_log: Dict[str, List[str]] = {}
-        self.smoothing: Optional[str] = None
-        self.smoothing_prev: Optional[str] = None
-        self.upstream_sensor_dict: Optional[dict] = None
-        self.downstream_sensor_dict: Optional[dict] = None
-        self._lag_anchor_idx: int = 0                   # remembers first lag position
         self.clean_state: Optional[dict] = None
+
         self.base_features_prepared = False
         self.horizon_finalized = False
-        
-        # feature transformers
+
+        # Anchor to insert GMAN predictions before lag features. We store the
+        # *column name* of the first lag to avoid staleness if columns are added later.
+        self._lag_anchor_col: Optional[str] = None
+
+        # Spatial neighbor graphs (canonical + legacy mirrors)
+        self.upstream_dict: Optional[dict] = None
+        self.downstream_dict: Optional[dict] = None
+        # Legacy names kept for code that still references them
+        self.upstream_sensor_dict: Optional[dict] = None
+        self.downstream_sensor_dict: Optional[dict] = None
+
+        # Feature transformers (set during fit/transform)
         self.sensor_encoder: Optional[SensorEncodingStrategy] = None
         self.datetime_fe: Optional[DateTimeFeatureEngineer] = None
         self.adjacency_fe: Optional[AdjacentSensorFeatureAdder] = None
         self.lag_fe: Optional[TemporalLagFeatureAdder] = None
-        self.congestion_flagger:   PerSensorCongestionFlagger | None = None
-        self.outlier_flagger:      GlobalOutlierFlagger | None = None
+        self.congestion_flagger: PerSensorCongestionFlagger | None = None
+        self.outlier_flagger: GlobalOutlierFlagger | None = None
         self.momentum_fe: MomentumFeatureEngineer | None = None
         self.pred_time_cyc_fe: PredictionTimeCyclicalFeatureEngineer | None = None
         self.adjacency_fe_congested: Optional[AdjacentSensorFeatureAdderCongestion] = None
         self.upstream_shifted_fe: Optional[UpstreamTravelTimeShiftedFeatures] = None
-        
-        
-        # optional / horizon-specific components that might not be created
         self.previous_day_fe: Optional[PreviousWeekdayWindowFeatureEngineer] = None
         self.weather_dropper: Optional[WeatherFeatureDropper] = None
         self.gman_adder: Optional[GMANPredictionAdder] = None
 
-
-        # split artefacts
+        # Train/test matrices (finalise_for_horizon)
         self.X_train = self.X_test = self.y_train = self.y_test = None
 
+        # Misc
+        self.smoothing_id: Optional[str] = None
+        self.smoothing_id_prev: Optional[str] = None
+        self.dtype_schema: Optional[dict] = None
+        self.row_order: List[str] = [self.datetime_col, self.sensor_col]
+
     # ------------------------------------------------------------------ #
-    # Encoder selector
+    # Helpers (defaults computed at call-time to pick up current attrs)
     # ------------------------------------------------------------------ #
     def _get_sensor_encoder(self):
+        """Factory to obtain the configured sensor encoder strategy."""
         self._log(f"Using sensor encoding type: {self.sensor_encoding_type}")
         if self.sensor_encoding_type == "ordinal":
             return OrdinalSensorEncoder(
@@ -150,13 +178,10 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 value_col=self.value_col,
                 disable_logs=self.disable_logs,
             )
+        raise ValueError(f"Unsupported sensor_encoding_type {self.sensor_encoding_type}")
 
-        raise ValueError(
-            f"Unsupported sensor_encoding_type {self.sensor_encoding_type}"
-        )
-        
-    # ---- Momentum defaults (computed at call-time to pick up current attrs) ----
     def _default_momentum_params(self) -> Dict[str, Any]:
+        """Reasonable defaults for momentum-style features."""
         return {
             "sensor_col": getattr(self, "sensor_col", "sensor_id"),
             "value_col": getattr(self, "value_col", "value"),
@@ -174,12 +199,18 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             "epsilon": 1e-6,
             "disable_logs": getattr(self, "disable_logs", False),
         }
-    
+
     def _default_upstream_shifted_params(self) -> Dict[str, Any]:
         """
         Defaults for UpstreamTravelTimeShiftedFeatures. We try to reuse the
         neighbor graph discovered by AdjacentSensorFeatureAdder (if present),
-        otherwise we fall back to sensor_dict_path.
+        otherwise we fall back to sensor_dict_path on disk.
+
+        Key intuition:
+        --------------
+        For an upstream sensor U and downstream sensor S, we align U's speed
+        at time t-τ to S's time t, where τ approximates travel time between U->S
+        under free-flow conditions. This can supply early signals for S.
         """
         return {
             # Prefer the in-memory upstream dict built earlier in prepare_base_features
@@ -187,25 +218,25 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             # Fallback to on-disk JSONs if upstream_dict is None
             "sensor_dict_path": getattr(self, "sensor_dict_path", None),
 
-            "spatial_adj": 1,                 # use the first upstream neighbor by default
+            "spatial_adj": 1,                 # first upstream neighbor by default
 
             # Column names
             "datetime_col": self.datetime_col,
             "value_col": self.value_col,
             "sensor_col": self.sensor_col,
 
-            # How far to look back (τ) = distance / freeflow_speed
+            # τ selection = distance / freeflow_speed
             "freeflow_percentile": 0.95,      # estimate free-flow from 95th pct
             "use_upstream_freeflow": True,    # use upstream sensor’s free-flow
             "fallback_freeflow_kph": 100.0,   # used if quantile is missing/0
             "minutes_per_row": float(getattr(self, "minutes_per_row", 1.0)),
             "cap_minutes": 30.0,              # clamp τ to avoid huge shifts
 
-            # Which features to emit for each upstream k
+            # Emitted features for each upstream neighbor k
             "add_speed": True,                # U[k] speed aligned to S at t
             "add_delta1": True,               # Δ speed vs. S(t)
-            "add_slope": True,                # short-window slope over U[k](t-τ..t-τ-w)
-            "slope_windows": (3, 5),          # slope windows in rows
+            "add_slope": True,                # slope over U[k](t-τ..t-τ-w)
+            "slope_windows": (3, 5),
 
             # Fill & logging
             "fill_nans_value": -1.0,
@@ -242,19 +273,26 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         momentum_params: dict | None = None,
         add_adjacency_congestion_features: bool = False,
         normalize_by_distance_congested: bool = False,
-        add_upstream_shifted_features: bool = True,
+        add_upstream_shifted_features: bool = False,
         upstream_shifted_params: dict | None = None,
     ) -> pd.DataFrame:
-        
-        
-        print("Running prepare_base_features!!!!!!!!!!!!!!!!")
+        """
+        Build the horizon-agnostic feature table.
+
+        Parameters mirror the original implementation; the ones added at the end
+        are optional feature toggles with sensible defaults.
+
+        Returns
+        -------
+        pd.DataFrame
+            The full horizon-agnostic feature frame (including `test_set` flags).
+        """
         if test_start_time is not None and test_size != 1 / 3:
             warnings.warn(
                 "Both 'test_start_time' and 'test_size' supplied; "
-                "explicit date split takes precedence."
+                "explicit date split takes precedence (test_size is ignored by loader)."
             )
-        effective_test_size = test_size if test_start_time is None else 1 / 3
-        
+
         self.smoothing_id = f"win{window_size}_{'med' if use_median_instead_of_mean_smoothing else 'mean'}"
 
         # 1) Load & basic cleaning
@@ -271,33 +309,36 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             smooth_speeds=smooth_speeds,
             use_median_instead_of_mean=use_median_instead_of_mean_smoothing,
             relative_threshold=relative_threshold,
-            test_size=effective_test_size,
+            test_size=test_size,
             test_start_time=test_start_time,
             diagnose_extreme_changes=diagnose_extreme_changes,
         )
-        df.sort_values(by=[self.datetime_col,self.sensor_col],inplace=True)
+        df.sort_values(by=[self.datetime_col, self.sensor_col], inplace=True)
+
+        # Save raw/clean references and metadata
         self.df_orig = loader.df_orig
         self.df_orig_smoothed = loader.df_orig_smoothed
+        self.df_raw = loader.df_raw
+        self.df_raw_test = loader.df_raw_test
         self.first_test_timestamp = loader.first_test_timestamp
         self.last_test_timestamp = loader.last_test_timestamp
         df.attrs["smoothing_id"] = self.smoothing_id
         self.clean_state = {
             "relative_threshold": relative_threshold,
-            "smoothing_window":   window_size,
-            "use_median":         use_median_instead_of_mean_smoothing,
+            "smoothing_window": window_size,
+            "use_median": use_median_instead_of_mean_smoothing,
             "filter_extreme_changes": bool(filter_extreme_changes),
-            "filter_on_train_only":   bool(filter_on_train_only),
-            "smooth_speeds":          bool(smooth_speeds),
+            "filter_on_train_only": bool(filter_on_train_only),
+            "smooth_speeds": bool(smooth_speeds),
         }
 
-        self.df_raw = loader.df_raw
-        self.df_raw_test = loader.df_raw_test
         # 2) Sensor encoding
         encoder = self._get_sensor_encoder()
         encoder.fit(df)
         df = encoder.transform(df)
-        self.sensor_encoder = encoder  
-        self.sensor_encoder_mapping = encoder.mapping_                                       
+        self.sensor_encoder = encoder
+        # Store mapping if your encoders provide it
+        self.sensor_encoder_mapping = getattr(encoder, "mapping_", None)
 
         # 3) Date-time features
         dt_fe = DateTimeFeatureEngineer(datetime_col=self.datetime_col)
@@ -306,8 +347,7 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.datetime_fe = dt_fe
         self.feature_log["datetime_features"] = dt_fe.feature_names_out_
 
-
-        # 4) Spatial adjacency
+        # 4) Spatial adjacency (fit -> read dicts -> transform)
         spatial = AdjacentSensorFeatureAdder(
             sensor_dict_path=self.sensor_dict_path,
             spatial_adj=spatial_adj,
@@ -319,9 +359,13 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             disable_logs=self.disable_logs,
             smoothing_id=self.smoothing_id,
         )
+        spatial.fit(df)
+        # Cache neighbor graphs (canonical + legacy mirror names)
         self.downstream_dict = spatial.downstream_dict_
         self.upstream_dict = spatial.upstream_dict_
-        spatial.fit(df)
+        self.downstream_sensor_dict = self.downstream_dict
+        self.upstream_sensor_dict = self.upstream_dict
+
         df = spatial.transform(df)
         self.adjacency_fe = spatial
         self.feature_log["spatial_features"] = spatial.feature_names_out_
@@ -341,106 +385,90 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         self.lag_fe = lag_fe
         self.feature_log["lag_features"] = lag_fe.feature_names_out_
 
-        # 6) Congestion flags  -----------------------------------------------
+        # Anchor the *name* of the first lag column to prevent staleness.
+        if self.feature_log["lag_features"]:
+            self._lag_anchor_col = self.feature_log["lag_features"][0]
+        else:
+            self._lag_anchor_col = None
+
+        # 6) Congestion & outlier flags
         cong_flagger = PerSensorCongestionFlagger(
-            hour_start         = hour_start,
-            hour_end           = hour_end,
-            quantile_threshold = quantile_threshold,
-            quantile_percentage= quantile_percentage,
-            sensor_col         = self.sensor_col,
-            value_col          = self.value_col,
-            hour_col           = "hour",
-            disable_logs       = self.disable_logs,
+            hour_start=hour_start,
+            hour_end=hour_end,
+            quantile_threshold=quantile_threshold,
+            quantile_percentage=quantile_percentage,
+            sensor_col=self.sensor_col,
+            value_col=self.value_col,
+            hour_col="hour",
+            disable_logs=self.disable_logs,
         )
-
         outlier_flagger = GlobalOutlierFlagger(
-            lower_bound  = lower_bound,
-            upper_bound  = upper_bound,
-            value_col    = self.value_col,
-            sensor_col   = self.sensor_col,
-            disable_logs = self.disable_logs,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            value_col=self.value_col,
+            sensor_col=self.sensor_col,
+            disable_logs=self.disable_logs,
         )
-
         cong_flagger.fit(df)
         outlier_flagger.fit(df)
-
-        df  = cong_flagger.transform(df)
-        df  = outlier_flagger.transform(df)
-
+        df = cong_flagger.transform(df)
+        df = outlier_flagger.transform(df)
         self.congestion_flagger = cong_flagger
-        self.outlier_flagger    = outlier_flagger
-        self.feature_log["congestion_features"] = cong_flagger.feature_names_out_ \
-                                                + outlier_flagger.feature_names_out_
+        self.outlier_flagger = outlier_flagger
+        self.feature_log["congestion_features"] = (
+            cong_flagger.feature_names_out_ + outlier_flagger.feature_names_out_
+        )
+
         # 6.5) Optional adjacency congestion features
         if add_adjacency_congestion_features:
             spatial_congested = AdjacentSensorFeatureAdderCongestion(
-            sensor_dict_path=self.sensor_dict_path,
-            spatial_adj=spatial_adj,
-            normalize_by_distance=normalize_by_distance_congested,
-            datetime_col=self.datetime_col,
-            value_col='is_congested',
-            sensor_col=self.sensor_col,
-            disable_logs=self.disable_logs,
-            smoothing_id=self.smoothing_id,
-        )
+                sensor_dict_path=self.sensor_dict_path,
+                spatial_adj=spatial_adj,
+                normalize_by_distance=normalize_by_distance_congested,
+                datetime_col=self.datetime_col,
+                value_col="is_congested",
+                sensor_col=self.sensor_col,
+                disable_logs=self.disable_logs,
+                smoothing_id=self.smoothing_id,
+            )
             spatial_congested.fit(df)
             df = spatial_congested.transform(df)
             self.adjacency_fe_congested = spatial_congested
             self.feature_log["spatial_features_congested"] = spatial_congested.feature_names_out_
-        
-        # ---- Upstream travel-time–shifted features (horizon-agnostic) ----
+
+        # 7) Optional upstream travel-time–shifted features (horizon-agnostic)
         if add_upstream_shifted_features:
-            # sort for rolling/alignment consistency
-            df = df.sort_values([self.sensor_col, self.datetime_col])
-
+            df = df.sort_values([self.sensor_col, self.datetime_col])  # ensure order for rolling
             us_kwargs = self._default_upstream_shifted_params()
-            if upstream_shifted_params:
-                us_kwargs = upstream_shifted_params
-                us_kwargs.update(upstream_shifted_params)
-
+            if upstream_shifted_params is not None:
+                # Merge *without* mutating caller; preserve defaults and override with user
+                us_kwargs = {**us_kwargs, **upstream_shifted_params}
             upshift_fe = UpstreamTravelTimeShiftedFeatures(**us_kwargs)
             upshift_fe.fit(df)
             df = upshift_fe.transform(df)
-
             self.upstream_shifted_fe = upshift_fe
             self.feature_log["upstream_shifted_features"] = list(upshift_fe.feature_names_out_)
             df = df.sort_values([self.datetime_col, self.sensor_col])
 
-
-        # remember where lag features start for legacy GMAN col position
-        if self.feature_log["lag_features"]:
-            lag_cols = self.feature_log["lag_features"]
-            self._lag_anchor_idx = int(df.columns.get_loc(lag_cols[0]))
-        else:
-            self._lag_anchor_idx = len(df.columns)
-
-        # cache
-        self.base_df = df
-        self.smoothing_id_prev = self.smoothing_id
-        self.base_features_prepared = True
-        
-                # --- Momentum features (HORIZON-INDEPENDENT) ---
+        # 8) Optional momentum features (still horizon-agnostic)
         if add_momentum_features:
             df = df.sort_values([self.sensor_col, self.datetime_col])
             mm_kwargs = self._default_momentum_params()
-            if momentum_params:                # <-- if dict is provided, override defaults
-                mm_kwargs = momentum_params
-
+            if momentum_params is not None:
+                mm_kwargs = {**mm_kwargs, **momentum_params}
             mom_fe = MomentumFeatureEngineer(**mm_kwargs)
             mom_fe.fit(df)
             df = mom_fe.transform(df)
-
             self.momentum_fe = mom_fe
             self.feature_log["momentum_features"] = list(mom_fe.feature_names_out_)
             df = df.sort_values([self.datetime_col, self.sensor_col])
-            
-            # cache
+
+        # Cache and mark completion (once)
         self.base_df = df
         self.smoothing_id_prev = self.smoothing_id
         self.base_features_prepared = True
 
         return df.copy()
-    
 
     # ================================================================== #
     # 7-10  Horizon-specific part
@@ -459,47 +487,58 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         drop_datetime: bool = True,
         drop_sensor_id: bool = True,
         add_prediction_time_cyclical_features: bool = True,
-        include_current_time_cyclical: bool = False,
-    ):  
-        self.row_order = [self.datetime_col,self.sensor_col]
-        
-        if not(drop_datetime) or not(drop_sensor_id):
-            warnings.warn(f"[finalize_for_horizon] drop_datetime feature value is: {drop_datetime},\
-                          drop_sensor_id value is: {drop_sensor_id}. These columns both \
-                              must not exist when training the model, either drop them before training or \
-                                  rerun TrafficDataPipelineOrchestrator with both set to True (their default values).")
+        include_current_time_cyclical: bool = True,  # aligned default with run_pipeline
+    ):
+        """
+        Add horizon-specific signals, targets, and split into X/y.
+
+        Returns
+        -------
+        Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]
+            X_train, X_test, y_train, y_test
+        """
         if not self.base_features_prepared:
             raise RuntimeError("Call prepare_base_features() first.")
 
+        if not (drop_datetime and drop_sensor_id):
+            warnings.warn(
+                "[finalise_for_horizon] drop_datetime/drop_sensor_id are typically True "
+                "for modeling; set to True or drop those columns manually before training."
+            )
+
         df = self.base_df.copy()
         df = df.sort_values(self.row_order, kind="mergesort").reset_index(drop=True)
-        
 
-        # --- GMAN merge (horizon-specific) -----------------------------
+        # --- GMAN merge (horizon-specific)
         if df_gman is not None:
             adder = GMANPredictionAdder(
                 df_gman,
                 sensor_col=self.sensor_col,
                 datetime_col=self.datetime_col,
                 convert_to_delta=convert_gman_prediction_to_delta_speed,
-                drop_missing= drop_missing_gman_rows
+                drop_missing=drop_missing_gman_rows,
             )
             df = adder.transform(df, value_col=self.value_col)
             gman_cols = [adder.prediction_col]
-            if adder.keep_target_date and "gman_target_date" in df.columns:
+            if getattr(adder, "keep_target_date", False) and "gman_target_date" in df.columns:
                 gman_cols.append("gman_target_date")
 
-            # keep legacy column order – insert before first lag feature
+            # Keep legacy ordering: insert GMAN cols *before* first lag feature.
             cols_current = list(df.columns)
             for c in gman_cols:
                 cols_current.remove(c)
-            anchor = self._lag_anchor_idx
+
+            if self._lag_anchor_col and self._lag_anchor_col in df.columns:
+                anchor = df.columns.get_loc(self._lag_anchor_col)
+            else:
+                anchor = len(cols_current)  # no lags; append to the end
+
             cols_current[anchor:anchor] = gman_cols
             df = df[cols_current]
             self.gman_adder = adder
             self.feature_log["gman_predictions"] = gman_cols
 
-        # --- previous weekday -----------------------------------------
+        # --- previous weekday (raw lookups around previous weekday target time)
         if add_previous_weekday_feature:
             prev = PreviousWeekdayWindowFeatureEngineer(
                 datetime_col=self.datetime_col,
@@ -509,15 +548,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 window_before_min=previous_weekday_window_min,
                 window_after_min=previous_weekday_window_min,
                 step_min=1,
-                aggs=[],
+                aggs=[],  # if your transformer expects an explicit raw feature, keep as designed
                 disable_logs=self.disable_logs,
             )
             prev.fit(df)
             df = prev.transform(df)
             self.previous_day_fe = prev
             self.feature_log["previous_day_features"] = prev.feature_names_out_
-        
-        # --- prediction-time cyclical encodings (curr + tgt) ---------------
+
+        # --- prediction-time cyclical encodings (target-time; optionally current time)
         if add_prediction_time_cyclical_features:
             ptfe = PredictionTimeCyclicalFeatureEngineer(
                 datetime_col=self.datetime_col,
@@ -526,27 +565,26 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
                 add_hour=True,
                 add_minute=True,
                 include_current_time=include_current_time_cyclical,
-                include_forecast_time=True,            # always include target time encodings
+                include_forecast_time=True,   # always include encodings for target time
                 disable_logs=self.disable_logs,
             )
-            # Stateless; fit is a no-op but keeps parity with others
-            ptfe.fit(df)
+            ptfe.fit(df)  # stateless, but keeps parity with other components
             df = ptfe.transform(df)
             self.pred_time_cyc_fe = ptfe
             self.feature_log["prediction_time_cyclical"] = list(ptfe.feature_names_out_)
 
-        # --- drop weather ---------------------------------------------
+        # --- optionally drop weather columns
         if drop_weather:
-            weather_dropper = WeatherFeatureDropper(weather_cols=self.weather_cols,disable_logs=self.disable_logs)
+            weather_dropper = WeatherFeatureDropper(
+                weather_cols=self.weather_cols, disable_logs=self.disable_logs
+            )
             weather_dropper.fit(df)
             df = weather_dropper.transform(df)
             self.feature_log["weather_dropped"] = weather_dropper.cols_to_drop_
             self.weather_dropper = weather_dropper
 
-        # --- target & prediction date ---------------------------------
-        df["prediction_time"] = df.groupby(self.sensor_col)[self.datetime_col].shift(
-            -horizon
-        )
+        # --- target & prediction timestamps
+        df["prediction_time"] = df.groupby(self.sensor_col)[self.datetime_col].shift(-horizon)
 
         target_creator = TargetVariableCreator(
             horizon=horizon,
@@ -560,22 +598,21 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         df = target_creator.transform(df)
         self.target_creator = target_creator
         self.feature_log["target_variables"] = target_creator.feature_names_out_
-        
-        # --- after all features added, before split ---
-        # Enforce lightweight dtypes on the entire frame (features + target + bookkeeping).
+
+        # --- enforce compact dtypes (features + targets + bookkeeping)
         dtype_schema = build_dtype_schema(df)
         df = enforce_dtypes(df, dtype_schema)
         self.dtype_schema = dtype_schema
 
-        # --- split -----------------------------------------------------
-        self.df = df
-        self.df.sort_values(by=[self.datetime_col,self.sensor_col],inplace=True)
-        train_df = df[~df["test_set"]].copy()
-        test_df = df[df["test_set"]].copy()
-        
+        # --- final split
+        self.df = df.sort_values(by=[self.datetime_col, self.sensor_col])
+        train_df = self.df[~self.df["test_set"]].copy()
+        test_df = self.df[self.df["test_set"]].copy()
+
         X_train, y_train = train_df.drop(columns=["target"]), train_df["target"]
         X_test, y_test = test_df.drop(columns=["target"]), test_df["target"]
 
+        # Columns to drop for modeling (if present)
         cols_to_drop: List[str] = [
             "target_total_speed",
             "target_speed_delta",
@@ -586,33 +623,23 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         ]
         if drop_datetime:
             cols_to_drop.append(self.datetime_col)
-        
         if drop_sensor_id:
             cols_to_drop.append(self.sensor_col)
-        
-        for subset in (X_train, X_test):
-            subset.drop(
-                columns=[c for c in cols_to_drop if c in subset.columns], inplace=True
-            )
 
-        
-        self.X_train, self.X_test, self.y_train, self.y_test = (
-            X_train,
-            X_test,
-            y_train,
-            y_test,
-        )
+        for subset in (X_train, X_test):
+            subset.drop(columns=[c for c in cols_to_drop if c in subset.columns], inplace=True)
+
+        self.X_train, self.X_test, self.y_train, self.y_test = X_train, X_test, y_train, y_test
         self.horizon_finalized = True
         return X_train, X_test, y_train, y_test
 
     # ================================================================== #
-    # Legacy façade – same signature / behaviour as before               #
+    # Legacy façade – same signature / behaviour as before, but complete #
     # ================================================================== #
-    
     def run_pipeline(
         self,
         *,
-        # base args
+        # --- base args (complete set) ---
         test_size: float = 1 / 3,
         test_start_time: Optional[str | pd.Timestamp] = None,
         filter_on_train_only: bool = False,
@@ -620,8 +647,6 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         smooth_speeds: bool = True,
         relative_threshold: float = 0.7,
         diagnose_extreme_changes: bool = False,
-        add_gman_predictions: bool = False, 
-        convert_gman_prediction_to_delta_speed: bool = True,
         window_size: int = 5,
         spatial_adj: int = 1,
         adj_are_relative: bool = True,
@@ -635,20 +660,37 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
         lower_bound: float = 0.01,
         upper_bound: float = 0.99,
         use_median_instead_of_mean_smoothing: bool = False,
-        # horizon-specific args
+        add_momentum_features: bool = False,
+        momentum_params: dict | None = None,
+        add_adjacency_congestion_features: bool = False,
+        normalize_by_distance_congested: bool = False,
+        add_upstream_shifted_features: bool = False,
+        upstream_shifted_params: dict | None = None,
+
+        # --- horizon-specific args (complete set) ---
         horizon: int = 15,
         drop_weather: bool = True,
         add_previous_weekday_feature: bool = True,
         previous_weekday_window_min: int = 0,
         use_gman_target: bool = False,
-        drop_missing_gman_rows = False,
-        drop_datetime = True,
-        drop_sensor_id = True,
+        drop_missing_gman_rows: bool = False,
+        drop_datetime: bool = True,
+        drop_sensor_id: bool = True,
         add_prediction_time_cyclical_features: bool = True,
-        include_current_time_cyclical: bool = True,
+        include_current_time_cyclical: bool = False,
+        add_gman_predictions: bool = False,
+        convert_gman_prediction_to_delta_speed: bool = True,
     ):
+        """
+        Convenience façade that runs the full pipeline with a single call, exposing
+        all arguments of `prepare_base_features` and `finalise_for_horizon`.
 
-        # 1) core part
+        Returns
+        -------
+        Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]
+            X_train, X_test, y_train, y_test
+        """
+        # 1) base (horizon-independent) part
         self.prepare_base_features(
             test_size=test_size,
             test_start_time=test_start_time,
@@ -670,9 +712,15 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             lower_bound=lower_bound,
             upper_bound=upper_bound,
             use_median_instead_of_mean_smoothing=use_median_instead_of_mean_smoothing,
+            add_momentum_features=add_momentum_features,
+            momentum_params=momentum_params,
+            add_adjacency_congestion_features=add_adjacency_congestion_features,
+            normalize_by_distance_congested=normalize_by_distance_congested,
+            add_upstream_shifted_features=add_upstream_shifted_features,
+            upstream_shifted_params=upstream_shifted_params,
         )
 
-        # 2) horizon-specific features
+        # 2) horizon-specific part
         return self.finalise_for_horizon(
             horizon=horizon,
             df_gman=self.df_gman_legacy if add_gman_predictions else None,
@@ -683,11 +731,14 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             use_gman_target=use_gman_target,
             drop_missing_gman_rows=drop_missing_gman_rows,
             drop_datetime=drop_datetime,
-            drop_sensor_id= drop_sensor_id,
+            drop_sensor_id=drop_sensor_id,
             add_prediction_time_cyclical_features=add_prediction_time_cyclical_features,
-            include_current_time_cyclical=include_current_time_cyclical
+            include_current_time_cyclical=include_current_time_cyclical,
         )
-    
+
+    # ================================================================== #
+    # Export
+    # ================================================================== #
     def export_states(self, strict: bool = False) -> dict:
         """
         Collect everything an inference pipeline will need.
@@ -698,51 +749,48 @@ class TrafficDataPipelineOrchestrator(LoggingMixin):
             raise RuntimeError("Base features not prepared. Run prepare_base_features() first.")
         if not self.horizon_finalized:
             raise RuntimeError("Horizon not finalized. Run finalise_for_horizon() first.")
-        
+
         def safe_export(obj: Optional[object]) -> Optional[dict]:
-            """
-            Safely export state of an object, or None if not available.
-            """
+            """Safely export state of an object, or None if not available."""
             return obj.export_state() if obj is not None else None
-        
+
         states = {
-                # Schema/cleaning metadata (export None if not available)
-                "schema_state": {
-                    "sensor_col":   getattr(self, "sensor_col", None),
-                    "datetime_col": getattr(self, "datetime_col", None),
-                    "value_col":    getattr(self, "value_col", None),
-                    "row_order":    getattr(self, "row_order", None),
-                },
-                "clean_state":           getattr(self, "clean_state", None),
+            # Schema/cleaning metadata
+            "schema_state": {
+                "sensor_col": getattr(self, "sensor_col", None),
+                "datetime_col": getattr(self, "datetime_col", None),
+                "value_col": getattr(self, "value_col", None),
+                "row_order": getattr(self, "row_order", None),
+            },
+            "clean_state": getattr(self, "clean_state", None),
 
-                # Core transformers (all optional)
-                "sensor_encoder_state":  safe_export(self.sensor_encoder),
-                "datetime_state":        safe_export(self.datetime_fe),
-                "adjacency_state":       safe_export(self.adjacency_fe),
-                "lag_state":             safe_export(self.lag_fe),
-                "congestion_state":      safe_export(self.congestion_flagger),
-                "outlier_state":         safe_export(self.outlier_flagger),
-                "adjacent_congestion_state": safe_export(self.adjacency_fe_congested),
-                "momentum_state":        safe_export(self.momentum_fe),
-                "upstream_shifted_state": safe_export(self.upstream_shifted_fe),
-    
-                "prediction_time_cyc_state": safe_export(self.pred_time_cyc_fe),
+            # Core transformers
+            "sensor_encoder_state": safe_export(self.sensor_encoder),
+            "datetime_state": safe_export(self.datetime_fe),
+            "adjacency_state": safe_export(self.adjacency_fe),
+            "lag_state": safe_export(self.lag_fe),
+            "congestion_state": safe_export(self.congestion_flagger),
+            "outlier_state": safe_export(self.outlier_flagger),
+            "adjacent_congestion_state": safe_export(self.adjacency_fe_congested),
+            "momentum_state": safe_export(self.momentum_fe),
+            "upstream_shifted_state": safe_export(self.upstream_shifted_fe),
 
-                # Targets
-                "target_state":          safe_export(self.target_creator),
+            "prediction_time_cyc_state": safe_export(self.pred_time_cyc_fe),
 
-                # Horizon-specific / optional
-                "previous_day_state":    safe_export(self.previous_day_fe),
-                "weather_state":         safe_export(self.weather_dropper),
-                "gman_state":            safe_export(self.gman_adder),
+            # Targets
+            "target_state": safe_export(self.target_creator),
 
-                # Model wiring (optional as well)
-                "feature_cols":          list(self.X_train.columns) if self.X_train is not None else None,
-                "dtype_schema":          getattr(self, "dtype_schema", None),
-            }
+            # Horizon-specific / optional
+            "previous_day_state": safe_export(self.previous_day_fe),
+            "weather_state": safe_export(self.weather_dropper),
+            "gman_state": safe_export(self.gman_adder),
+
+            # Model wiring
+            "feature_cols": list(self.X_train.columns) if self.X_train is not None else None,
+            "dtype_schema": getattr(self, "dtype_schema", None),
+        }
 
         if strict:
-            # Optional validation block you can turn on in tests/CI
             must = [
                 "schema_state", "clean_state", "sensor_encoder_state",
                 "datetime_state", "adjacency_state", "lag_state",

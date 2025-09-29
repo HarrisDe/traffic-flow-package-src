@@ -75,3 +75,5 @@ scripts/*
 # -------------------------------
 *.
 exec "$SHELL"
+# Local archives
+traffic-flow-package-src-*.zip
