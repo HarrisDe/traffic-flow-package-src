@@ -49,6 +49,7 @@ save_repo_to_zip.txt
 *.csv
 *.pkl
 *.joblib
+*.zip
 payload.json
 outputs/*
 !outputs/.gitkeep
